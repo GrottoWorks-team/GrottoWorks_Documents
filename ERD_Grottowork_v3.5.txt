@@ -1,0 +1,1251 @@
+// ============================================================
+// GROTTOWORKS - ERD v3.5
+// GrottoWorks - A Parish Christmas Grotto and Decoration
+// Management System
+//
+// Database Design: PostgreSQL-oriented DBML
+// v3.5 (07/10/2026): team decisions D-01..D-06 -- leader approves purchase
+// requests and assigns buyers through PURCHASE tasks; donation pledge workflow
+// restored with per-receipt posting; support requests cover staffing and/or
+// material (stock transfer between work areas); no readiness template; volunteer
+// records lender details for borrowed items; leader approves each check-in.
+// Added: attendance_request, attendance_correction, donation_receipt(_item),
+// support_request_material, support_response_material, volunteer_availability,
+// notification, notification_preference, activity_log, file_object.
+// See v3.4 -> v3.5 change notes at the end of this file.
+// v3.3: staff-entered donor profiles; MONEY/MATERIAL donations;
+// donation is the authoritative money source; contribution links to donation.
+// Previous v3.2: single role; monetary amount; multi-position/multi-skill support;
+// manual task completion approval; multi-material purchase requests.
+// DB constraints cover local checks and references. Cross-table business
+// rules in Notes must be enforced by the application in transactions.
+// Draft requests may be empty; submitted support/purchase requests must
+// contain at least one position/item. Validate in the service.
+// Corrected one-to-one DBML FK direction: volunteer_profile references app_user.
+// ============================================================
+
+
+// ============================================================
+// 1. ORGANIZATION & USER MANAGEMENT
+// ============================================================
+
+Table parish {
+  parish_id uuid [pk]
+  parish_name varchar(150) [not null]
+  parish_address varchar(255)
+  parish_description text
+  parish_status varchar(30) [not null]
+
+  created_at timestamp [not null]
+  updated_at timestamp
+}
+
+Table community {
+  community_id uuid [pk]
+  parish_id uuid [not null]
+
+  community_name varchar(150) [not null]
+  community_description text
+  community_status varchar(30) [not null]
+
+  created_at timestamp [not null]
+  updated_at timestamp
+}
+
+Table app_user {
+  user_id uuid [pk]
+  role_id uuid [not null, note: 'Exactly one role per account.']
+  parish_id uuid [note: 'Tenant scope. Required for every role except system ADMIN (BR-67).']
+
+  full_name varchar(150) [not null]
+  email varchar(255) [not null, unique]
+  phone varchar(30)
+  password_hash varchar(500)
+  user_status varchar(30) [not null]
+
+  created_at timestamp [not null]
+  updated_at timestamp
+}
+
+Table role {
+  role_id uuid [pk]
+
+  role_code varchar(50) [not null, unique]
+  role_name varchar(100) [not null]
+  role_description text
+}
+
+
+
+Table volunteer_profile {
+  volunteer_user_id uuid [pk]
+  community_id uuid [not null]
+
+  introduction text
+  availability_note text
+}
+
+Table volunteer_availability {
+  volunteer_availability_id uuid [pk]
+  volunteer_user_id uuid [not null]
+
+  available_from timestamp [not null]
+  available_to timestamp [not null]
+  availability_note text
+
+  checks {
+    `available_to > available_from` [name: 'volunteer_availability_valid_range']
+  }
+  Note: 'Structured availability used by volunteer matching (BR-15, BR-70). availability_note on volunteer_profile stays as free text.'
+}
+
+Table skill {
+  skill_id uuid [pk]
+
+  skill_code varchar(50) [not null, unique]
+  skill_name varchar(100) [not null]
+  skill_description text
+  skill_status varchar(30) [not null]
+}
+
+Table volunteer_skill {
+  volunteer_skill_id uuid [pk]
+
+  volunteer_user_id uuid [not null]
+  skill_id uuid [not null]
+
+  skill_level varchar(30)
+  skill_note text
+
+  indexes {
+    (volunteer_user_id, skill_id) [unique]
+  }
+}
+
+
+// ============================================================
+// 2. CHRISTMAS PLANNING
+// ============================================================
+
+Table christmas_season {
+  season_id uuid [pk]
+
+  parish_id uuid [not null]
+  created_by_user_id uuid [not null]
+
+  season_name varchar(150) [not null]
+  season_year int [not null]
+  start_date date [not null]
+  end_date date [not null]
+  season_status varchar(30) [not null, note: 'DRAFT, PLANNING, ACTIVE, READY, COMPLETED, ARCHIVED']
+  season_description text
+  estimated_budget decimal(14,2) [note: 'Planned season budget in VND; used for estimate vs actual cost reports.']
+
+  created_at timestamp [not null]
+  updated_at timestamp
+
+  indexes {
+    (parish_id, season_year) [unique]
+  }
+}
+
+Table work_area_category {
+  work_area_category_id uuid [pk]
+
+  category_code varchar(50) [not null, unique]
+  category_name varchar(100) [not null]
+  category_description text
+  category_status varchar(30) [not null]
+}
+
+Table work_area {
+  work_area_id uuid [pk]
+
+  season_id uuid [not null]
+  community_id uuid
+  work_area_category_id uuid
+  leader_user_id uuid
+  material_officer_user_id uuid
+
+  work_area_name varchar(150) [not null]
+  work_area_description text
+  start_date date
+  deadline date
+  work_area_status varchar(30) [not null]
+
+  created_at timestamp [not null]
+  updated_at timestamp
+}
+
+Table task {
+  task_id uuid [pk]
+
+  work_area_id uuid [not null]
+  created_by_user_id uuid [not null]
+
+  task_type varchar(30) [not null, default: 'WORK', note: 'WORK, PURCHASE, CORRECTIVE']
+  purchase_request_id uuid [note: 'Required when task_type = PURCHASE: the approved purchase request this buying task fulfils (D-01).']
+
+  task_name varchar(200) [not null]
+  task_description text
+  completion_criteria text [note: 'Leader-defined completion criteria shown in the review package.']
+  task_priority varchar(30) [not null]
+  estimated_hours decimal(6,2)
+  required_volunteer_count int
+  start_date date
+  deadline date
+  task_status varchar(30) [not null, note: 'DRAFT, OPEN, NOT_STARTED, IN_PROGRESS, SUBMITTED, REVISION_REQUIRED, COMPLETED, CANCELLED']
+
+  created_at timestamp [not null]
+  updated_at timestamp
+
+  checks {
+    `(task_type = 'PURCHASE' AND purchase_request_id IS NOT NULL) OR (task_type <> 'PURCHASE' AND purchase_request_id IS NULL)` [name: 'task_purchase_link']
+  }
+  Note: 'PURCHASE tasks are created by the work-area leader only after the purchase request is APPROVED. The buyer is the volunteer whose assignment on this task is ACCEPTED. A PURCHASE task becomes COMPLETED automatically when the material officer confirms delivery of its purchase (BR-65). CORRECTIVE tasks are linked from readiness_item.corrective_task_id.'
+}
+
+Table task_skill {
+  task_skill_id uuid [pk]
+
+  task_id uuid [not null]
+  skill_id uuid [not null]
+
+  required_skill_level varchar(30)
+  required_volunteer_count int
+
+  indexes {
+    (task_id, skill_id) [unique]
+  }
+}
+
+Table task_assignment {
+  task_assignment_id uuid [pk]
+
+  task_id uuid [not null]
+  volunteer_user_id uuid [not null]
+
+  assignment_type varchar(40) [not null]
+  assignment_status varchar(30) [not null]
+
+  requested_at timestamp
+  assigned_at timestamp
+  approved_at timestamp
+  rejected_at timestamp
+  assignment_note text
+}
+
+Table support_request {
+  support_request_id uuid [pk]
+  season_id uuid [not null]
+  work_area_id uuid [not null]
+  requested_by_user_id uuid [not null]
+  support_type varchar(30) [not null, note: 'STAFFING, MATERIAL, MIXED']
+  request_description text
+  deadline date
+  request_status varchar(30) [not null, note: 'DRAFT, PUBLISHED, PARTIALLY_FULFILLED, FULFILLED, CLOSED, CANCELLED']
+  created_at timestamp [not null]
+
+  Note: 'D-03: a request may ask for people (positions) and/or materials. STAFFING needs >= 1 position, MATERIAL needs >= 1 material line, MIXED needs both when published (BR-62). Total headcount is the sum of position counts, not skill counts. Validate that season matches work area.'
+}
+
+Table support_request_position {
+  support_request_position_id uuid [pk]
+  support_request_id uuid [not null]
+  position_name varchar(150) [not null]
+  required_volunteer_count int [not null]
+  position_note text
+
+  checks {
+    `required_volunteer_count > 0` [name: 'support_position_positive_count']
+  }
+  Note: 'Example: 2 people each with electrical AND welding skills; another position requests 3 decorators. Positions represent distinct people.'
+}
+
+Table support_position_skill {
+  support_request_position_id uuid [not null]
+  skill_id uuid [not null]
+  required_skill_level varchar(30)
+
+  indexes {
+    (support_request_position_id, skill_id) [pk]
+  }
+  Note: 'All listed skills are required for EACH person in the position (AND). No rows means general labor with no specific skill requirement.'
+}
+
+Table support_response {
+  support_response_id uuid [pk]
+
+  support_request_id uuid [not null]
+  volunteer_user_id uuid
+  responding_community_id uuid
+
+  response_status varchar(30) [not null, note: 'PENDING, PARTIALLY_ACCEPTED, ACCEPTED, REJECTED, CANCELLED']
+  response_quantity int [note: 'Offered headcount only; actual named participants are in support_response_member. Do not add these two counts. Material offers are in support_response_material.']
+  response_note text
+
+  created_at timestamp [not null]
+}
+
+
+Table support_response_member {
+  support_response_member_id uuid [pk]
+  support_response_id uuid [not null]
+  support_request_position_id uuid [not null]
+  volunteer_user_id uuid [not null]
+  member_status varchar(30) [not null, note: 'PENDING, APPROVED, REJECTED, CANCELLED, COMPLETED']
+
+  indexes {
+    (support_response_id, volunteer_user_id) [unique]
+  }
+  Note: 'Service must validate response and position belong to the same request, all required skills, capacity, and at most one active position per person in that request, including across responses. Individual response volunteer must match its member; community response can name multiple members.'
+}
+
+
+Table support_request_material {
+  support_request_material_id uuid [pk]
+  support_request_id uuid [not null]
+  material_id uuid [not null]
+
+  required_quantity decimal(12,2) [not null]
+  material_note text
+
+  indexes {
+    (support_request_id, material_id) [unique]
+  }
+  checks {
+    `required_quantity > 0` [name: 'support_request_material_positive_quantity']
+  }
+}
+
+Table support_response_material {
+  support_response_material_id uuid [pk]
+  support_response_id uuid [not null]
+  support_request_material_id uuid [not null]
+  source_work_area_id uuid [not null, note: 'Work area whose stock supplies the material (supporting community).']
+
+  offered_quantity decimal(12,2) [not null]
+  approved_quantity decimal(12,2)
+  received_usable_quantity decimal(12,2)
+  received_unusable_quantity decimal(12,2)
+
+  material_status varchar(30) [not null, note: 'PENDING, APPROVED, REJECTED, TRANSFERRED, CANCELLED']
+  approved_by_user_id uuid
+  approved_at timestamp
+  received_confirmed_by_user_id uuid
+  received_confirmed_at timestamp
+  material_note text
+
+  checks {
+    `offered_quantity > 0` [name: 'support_response_material_positive_offer']
+    `approved_quantity IS NULL OR (approved_quantity > 0 AND approved_quantity <= offered_quantity)` [name: 'support_response_material_valid_approval']
+    `received_usable_quantity IS NULL OR received_usable_quantity >= 0` [name: 'support_response_material_nonnegative_usable']
+    `received_unusable_quantity IS NULL OR received_unusable_quantity >= 0` [name: 'support_response_material_nonnegative_unusable']
+  }
+  Note: 'Material support = stock transfer between work areas (D-03). Offer must not exceed unallocated stock of source_work_area_id at approval time (BR-63). On approval the service posts TRANSFER_OUT on the source work area; the receiving material officer confirms received quantities, then TRANSFER_IN posts only usable quantity (BR-64). Source and target work areas must belong to the same season and must be different. Individual volunteers donating materials use the donation pledge workflow instead.'
+}
+
+
+// ============================================================
+// 3. MATERIAL MANAGEMENT
+// ============================================================
+
+Table material_category {
+  material_category_id uuid [pk]
+
+  category_code varchar(50) [not null, unique]
+  category_name varchar(100) [not null]
+  category_description text
+  category_status varchar(30) [not null]
+}
+
+Table material {
+  material_id uuid [pk]
+
+  material_category_id uuid [not null]
+
+  material_code varchar(50) [not null, unique]
+  material_name varchar(150) [not null]
+  material_unit varchar(30) [not null]
+  material_description text
+  material_status varchar(30) [not null]
+}
+
+Table material_requirement {
+  material_requirement_id uuid [pk]
+
+  work_area_id uuid [not null]
+  material_id uuid [not null]
+
+  required_quantity decimal(12,2) [not null]
+  existing_quantity decimal(12,2) [not null, default: 0]
+
+  requirement_status varchar(30) [not null]
+  requirement_note text
+
+  indexes {
+    (work_area_id, material_id) [unique]
+  }
+}
+
+Table task_material {
+  task_material_id uuid [pk]
+
+  task_id uuid [not null]
+  material_id uuid [not null]
+
+  required_quantity decimal(12,2) [not null]
+  material_note text
+
+  indexes {
+    (task_id, material_id) [unique]
+  }
+}
+
+Table material_transaction {
+  material_transaction_id uuid [pk]
+
+  material_id uuid [not null]
+  work_area_id uuid
+
+  transaction_type varchar(40) [not null, note: 'OPENING_STOCK, PURCHASE_DELIVERY, DONATION_RECEIPT, TASK_RETURN, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT_DAMAGED, ADJUSTMENT_LOST, ADJUSTMENT_DISPOSED']
+  transaction_quantity decimal(12,2) [not null, note: 'Signed: positive increases usable stock, negative decreases it.']
+  transaction_date timestamp [not null]
+
+  reference_type varchar(40) [note: 'PURCHASE_ITEM, DONATION_RECEIPT_ITEM, TASK_MATERIAL_REPORT_ITEM, SUPPORT_RESPONSE_MATERIAL, INVENTORY_ADJUSTMENT']
+  reference_id uuid
+  created_by_user_id uuid
+
+  transaction_note text
+
+  indexes {
+    (work_area_id, material_id)
+    (reference_type, reference_id, transaction_type) [unique, note: 'Posting a source record is idempotent.']
+  }
+  Note: 'Append-only stock ledger per work area (BR-23, BR-24). Confirmed available quantity = SUM(transaction_quantity) for a work area and material. Pledges, unconfirmed purchases and unusable quantities are never posted.'
+}
+
+
+// ============================================================
+// 4. PURCHASE MANAGEMENT
+// ============================================================
+
+Table purchase_request {
+  purchase_request_id uuid [pk]
+  work_area_id uuid [not null]
+  requested_by_user_id uuid [not null]
+  approved_by_user_id uuid [note: 'Work-area leader who approved or rejected (D-01).']
+  request_reason text
+  request_status varchar(30) [not null, note: 'DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, BUYER_ASSIGNED, PURCHASED, PARTIALLY_RECEIVED, COMPLETED, CANCELLED']
+  decision_note text [note: 'Required when REJECTED (BR-31).']
+  approved_at timestamp
+  rejected_at timestamp
+  created_at timestamp [not null]
+
+  Note: 'Created by the material officer, approved by the leader of the same work area (BR-28, BR-29). After approval the leader creates a PURCHASE task (task.purchase_request_id) and assigns a volunteer buyer (BR-30). Approval applies to the whole request. Estimated total is SUM of item estimated_cost; do not store a second editable total.'
+}
+
+Table purchase_request_item {
+  purchase_request_item_id uuid [pk]
+  purchase_request_id uuid [not null]
+  material_id uuid [not null]
+  requested_quantity decimal(12,2) [not null]
+  estimated_cost decimal(14,2) [note: 'Estimated total cost of this line, not unit price. NULL means not estimated.']
+  item_note text
+
+  indexes {
+    (purchase_request_id, material_id) [unique]
+  }
+  checks {
+    `requested_quantity > 0` [name: 'purchase_request_item_positive_quantity']
+    `estimated_cost IS NULL OR estimated_cost >= 0` [name: 'purchase_request_item_nonnegative_cost']
+  }
+}
+
+Table purchase {
+  purchase_id uuid [pk]
+
+  purchase_request_id uuid
+  task_id uuid [note: 'PURCHASE task that produced this purchase. Required when purchase_request_id is set.']
+  buyer_user_id uuid [not null, note: 'Volunteer with the ACCEPTED assignment on task_id.']
+  confirmed_by_user_id uuid [note: 'Material officer who confirmed delivery and usable quantity.']
+
+  supplier_name varchar(150)
+  purchase_date date [not null]
+  total_cost decimal(14,2)
+
+  purchase_status varchar(30) [not null, note: 'SUBMITTED, NEEDS_INFO, CONFIRMED, CANCELLED']
+
+  confirmed_at timestamp
+  cost_overrun_approved_by_user_id uuid [note: 'Leader who approved actual cost above the approved estimate (BR-32). Required before confirmation when total_cost exceeds the request estimate.']
+  cost_overrun_approved_at timestamp
+
+  Note: 'Receipt images/PDFs are file_object rows with reference_type = PURCHASE_RECEIPT and reference_id = purchase_id (max 5). SUBMITTED does not increase stock (BR-26); delivery confirmation posts PURCHASE_DELIVERY transactions for usable quantity only.'
+}
+
+Table purchase_item {
+  purchase_item_id uuid [pk]
+  purchase_request_item_id uuid [note: 'Required when purchase has a request. Service validates same request as purchase header and same material. NULL for purchases without a request.']
+
+  purchase_id uuid [not null]
+  material_id uuid [not null]
+
+  purchased_quantity decimal(12,2) [not null]
+  unit_price decimal(14,2) [not null]
+  total_price decimal(14,2) [not null]
+  received_usable_quantity decimal(12,2) [note: 'Set by the material officer on delivery confirmation.']
+  received_unusable_quantity decimal(12,2)
+
+  checks {
+    `purchased_quantity > 0 AND unit_price >= 0 AND total_price >= 0` [name: 'purchase_item_valid_amounts']
+    `received_usable_quantity IS NULL OR received_usable_quantity >= 0` [name: 'purchase_item_nonnegative_usable']
+  }
+}
+
+
+// ============================================================
+// 5. DONOR & DONATION (PLEDGE + RECEIPTS)
+// ============================================================
+
+Enum donation_kind {
+  MONEY
+  MATERIAL
+}
+
+Table donor {
+  donor_id uuid [pk]
+  user_id uuid [unique, note: 'Optional verified account link. External donors have no account and no role.']
+  donor_name varchar(150) [not null]
+  phone varchar(30)
+  email varchar(255)
+  address varchar(255)
+  donor_note text
+  created_by_user_id uuid [not null]
+  created_at timestamp [not null]
+  updated_at timestamp
+
+  Note: 'Officer/Admin enters or selects donor on the internal form. A volunteer pledging through the app gets (or reuses) a donor row linked by user_id. Do not auto-merge by name or unverified phone/email. Staff account identifies the recorder, never the donor. Contact details are optional for direct receipt.'
+}
+
+Enum donation_status {
+  PLEDGED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+Table donation {
+  donation_id uuid [pk]
+  donor_id uuid [not null]
+  season_id uuid [not null]
+  work_area_id uuid [note: 'Receiving work area. Required for MATERIAL (stock is per work area, BR-24); optional for MONEY.']
+  donation_type donation_kind [not null]
+  donation_status donation_status [not null]
+  pledged_amount decimal(14,2) [note: 'MONEY pledge in VND; NULL for direct receipts and for MATERIAL.']
+  amount decimal(14,2) [note: 'MONEY: total actually received (sum of donation_receipt.received_amount). NULL for MATERIAL.']
+  donation_date timestamp [not null, note: 'Pledge date, or receipt date for direct records.']
+  created_by_user_id uuid [not null, note: 'Volunteer who pledged or officer/admin who recorded.']
+  created_at timestamp [not null]
+  updated_at timestamp
+  cancel_reason text
+  donation_note text
+
+  checks {
+    `(donation_type = 'MONEY' AND (pledged_amount IS NULL OR pledged_amount > 0) AND (amount IS NULL OR amount >= 0)) OR (donation_type = 'MATERIAL' AND amount IS NULL AND pledged_amount IS NULL)` [name: 'donation_type_amount_consistency']
+    `donation_type <> 'MATERIAL' OR work_area_id IS NOT NULL` [name: 'donation_material_requires_work_area']
+    `donation_status <> 'CANCELLED' OR cancel_reason IS NOT NULL` [name: 'donation_cancel_reason']
+  }
+  Note: 'D-02: a donation starts either as a volunteer PLEDGE (status PLEDGED, nothing posted) or as an officer/admin direct record (status RECEIVED with one receipt created in the same transaction). Each physical receipt is a donation_receipt; status moves PLEDGED -> PARTIALLY_RECEIVED -> RECEIVED, or to CANCELLED with a reason (cancelling keeps already received receipts). Pledged values never count as stock or money received (BR-39). Legacy v3.4 rule kept below for direct records: Service enforces staff role and parish scope. MONEY has no donation_item. MATERIAL must have at least one item with positive received_quantity and at least one unit received across the donation; create header and items atomically. Each row represents one actual receipt occasion; later deliveries create new donations for the same donor. Money is authoritative here, never duplicated in contribution. Material usable stock is posted exactly once with this record. Changes to recorded quantities require atomic reconciliation with stock and contribution summaries.'
+}
+
+
+Table donation_item {
+  donation_item_id uuid [pk]
+  donation_id uuid [not null]
+  material_id uuid [not null]
+  pledged_quantity decimal(12,2) [note: 'Promised quantity for a pledge; NULL for direct unpledged receipt.']
+  received_quantity decimal(12,2) [not null, default: 0, note: 'Cached total of donation_receipt_item.received_quantity, including unusable units.']
+  unusable_quantity decimal(12,2) [not null, default: 0, note: 'Cached total of donation_receipt_item.unusable_quantity.']
+  item_note text
+
+  indexes {
+    (donation_id, material_id) [unique]
+  }
+  checks {
+    `pledged_quantity IS NULL OR pledged_quantity > 0` [name: 'donation_item_positive_pledge']
+    `received_quantity >= 0 AND unusable_quantity >= 0 AND unusable_quantity <= received_quantity` [name: 'donation_item_valid_receipt']
+  }
+  Note: 'Only for MATERIAL donation; enforce parent type in service or trigger. Quantities use material.material_unit, no independent donation unit. Usable received quantity = received_quantity - unusable_quantity. Stock is posted per donation_receipt_item, never from this row directly. pledged_quantity is the promised amount of a pledge; leave NULL for direct receipts. Item receipt status (PLEDGED, PARTIALLY_RECEIVED, FULLY_RECEIVED, UNUSABLE) is derived from pledged/received/unusable quantities instead of independently stored.'
+}
+
+Table donation_receipt {
+  donation_receipt_id uuid [pk]
+  donation_id uuid [not null]
+
+  received_at timestamp [not null]
+  received_by_user_id uuid [not null, note: 'Material officer or admin who physically received it.']
+  received_amount decimal(14,2) [note: 'MONEY only; NULL for MATERIAL.']
+  receipt_note text
+  created_at timestamp [not null]
+
+  checks {
+    `received_amount IS NULL OR received_amount > 0` [name: 'donation_receipt_positive_amount']
+  }
+  Note: 'One physical receipt occasion for a donation. Header, items, stock posting (DONATION_RECEIPT_ITEM transactions for usable quantity only), donation cached totals/status and contribution upsert run in one transaction (BR-38). Evidence photos are file_object rows with reference_type = DONATION_RECEIPT.'
+}
+
+Table donation_receipt_item {
+  donation_receipt_item_id uuid [pk]
+  donation_receipt_id uuid [not null]
+  donation_item_id uuid [not null]
+
+  received_quantity decimal(12,2) [not null]
+  unusable_quantity decimal(12,2) [not null, default: 0]
+  item_note text
+
+  indexes {
+    (donation_receipt_id, donation_item_id) [unique]
+  }
+  checks {
+    `received_quantity > 0 AND unusable_quantity >= 0 AND unusable_quantity <= received_quantity` [name: 'donation_receipt_item_valid_quantity']
+  }
+  Note: 'donation_item must belong to the same donation as the receipt. Usable = received_quantity - unusable_quantity. Receiving more than pledged is allowed with a warning and recorded as actually received.'
+}
+
+
+// ============================================================
+// 6. BORROWED ITEMS
+// ============================================================
+
+Table borrowed_item {
+  borrowed_item_id uuid [pk]
+
+  offered_by_user_id uuid [not null, note: 'Volunteer (or officer) who entered the loan offer, possibly on behalf of the lender (D-05). Contact point inside the system.']
+  accepted_by_user_id uuid [note: 'Material officer who accepted the offer.']
+  work_area_id uuid
+  task_id uuid [note: 'Optional task the item is assigned to.']
+  season_id uuid [not null]
+
+  owner_name varchar(150) [not null, note: 'Lender name; the lender does not need an account.']
+  owner_phone varchar(30)
+  owner_address varchar(255)
+  owner_note text
+
+  borrowed_item_name varchar(150) [not null]
+  borrowed_item_quantity decimal(12,2) [not null]
+  borrowed_item_description text
+  initial_condition varchar(50)
+  expected_return_date date [not null]
+  borrowed_item_status varchar(30) [not null, note: 'OFFERED, ACCEPTED, REJECTED, ISSUED, IN_USE, RETURNED. OVERDUE is derived from expected_return_date.']
+  accepted_at timestamp
+  created_at timestamp [not null]
+
+  checks {
+    `borrowed_item_quantity > 0` [name: 'borrowed_item_positive_quantity']
+  }
+  Note: 'D-05: borrowed items are not catalog materials and do not enter material_transaction. If task_id is set it must belong to work_area_id. Return condition and incidents are recorded in borrow_transaction (BR-41..BR-43).'
+}
+
+Table borrow_transaction {
+  borrow_transaction_id uuid [pk]
+
+  borrowed_item_id uuid [not null]
+
+  borrow_date date [not null]
+  return_date date
+  return_condition varchar(50) [note: 'GOOD, DAMAGED, LOST. Required when return_date is set (BR-42).']
+  returned_quantity decimal(12,2)
+  recorded_by_user_id uuid
+  transaction_note text
+}
+
+
+// ============================================================
+// 7. MATERIAL ALLOCATION
+// ============================================================
+
+Table material_allocation {
+  material_allocation_id uuid [pk]
+
+  work_area_id uuid [not null]
+  task_id uuid
+  allocated_by_user_id uuid [not null]
+
+  allocation_date timestamp [not null]
+  allocation_note text
+}
+
+Table material_allocation_item {
+  material_allocation_item_id uuid [pk]
+
+  material_allocation_id uuid [not null]
+  material_id uuid [not null]
+
+  allocated_quantity decimal(12,2) [not null]
+}
+
+
+// ============================================================
+// 8. TASK EXECUTION & PROGRESS
+// ============================================================
+
+Table task_progress {
+  task_progress_id uuid [pk]
+  task_id uuid [not null]
+  submitted_by_user_id uuid [not null]
+  progress_percent decimal(5,2) [not null]
+  progress_note text
+  submitted_at timestamp [not null]
+  approved_by_user_id uuid [note: 'approvedBy: leader who manually approves completion. NULL until approval.']
+  approved_at timestamp
+
+  checks {
+    `progress_percent >= 0 AND progress_percent <= 100` [name: 'task_progress_percent_range']
+    `(approved_by_user_id IS NULL AND approved_at IS NULL) OR (approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL AND progress_percent = 100 AND approved_at >= submitted_at)` [name: 'task_progress_completion_approval']
+  }
+  Note: '100 percent submission does not complete the task automatically. Service must authorize the responsible work-area leader and atomically set approval fields and task.task_status to COMPLETED. Prevent volunteers from setting approval fields.'
+}
+
+Table progress_evidence {
+  progress_evidence_id uuid [pk]
+
+  task_progress_id uuid [not null]
+
+  file_id uuid [not null, note: 'Completed file_object; replaces file_url from v3.4.']
+  evidence_caption varchar(255)
+
+  uploaded_at timestamp [not null]
+}
+
+Table attendance_request {
+  attendance_request_id uuid [pk]
+
+  task_assignment_id uuid [not null]
+  attendance_id uuid [note: 'Session created when an approved CHECK_IN request is applied.']
+  requested_by_user_id uuid [not null]
+  reviewed_by_user_id uuid
+
+  request_type varchar(20) [not null, default: 'CHECK_IN', note: 'CHECK_IN. CHECK_OUT is reserved if check-out approval is enabled later.']
+  requested_at timestamp [not null, note: 'Server time when the volunteer submitted the request; becomes check_in_at on approval (BR-60).']
+  request_status varchar(30) [not null, note: 'PENDING, APPROVED, REJECTED, CANCELLED']
+  request_note text
+  review_note text [note: 'Required when REJECTED.']
+  reviewed_at timestamp
+
+  Note: 'D-06: every check-in is approved individually by the leader of the task work area (BR-58, BR-59). At most one PENDING check-in per assignment and none while a session is OPEN. Pending or rejected requests never create attendance or hours (BR-61).'
+}
+
+Table attendance {
+  attendance_id uuid [pk]
+
+  task_assignment_id uuid [not null]
+  check_in_request_id uuid [not null, note: 'Approved CHECK_IN request that opened this session.']
+
+  check_in_at timestamp [not null]
+  check_out_at timestamp
+  working_hours decimal(6,2) [note: 'Approved hours after check-out or approved correction.']
+
+  attendance_status varchar(30) [not null, note: 'OPEN, CLOSED, CORRECTED']
+
+  checks {
+    `check_out_at IS NULL OR check_out_at > check_in_at` [name: 'attendance_valid_range']
+  }
+  Note: 'Check-out is recorded directly by the volunteer with server time. Corrections are stored in attendance_correction; when approved the session times and working_hours are updated and status becomes CORRECTED (BR-22).'
+}
+
+Table attendance_correction {
+  attendance_correction_id uuid [pk]
+
+  attendance_id uuid [not null]
+  requested_by_user_id uuid [not null]
+  reviewed_by_user_id uuid
+
+  original_check_in_at timestamp
+  original_check_out_at timestamp
+  requested_check_in_at timestamp [not null]
+  requested_check_out_at timestamp [not null]
+  correction_reason text [not null]
+
+  correction_status varchar(30) [not null, note: 'PENDING, APPROVED, REJECTED']
+  review_note text
+  reviewed_at timestamp
+  created_at timestamp [not null]
+
+  checks {
+    `requested_check_out_at > requested_check_in_at` [name: 'attendance_correction_valid_range']
+  }
+  Note: 'Keeps old time, new time, reason and reviewer (BR-22). Approved corrections must not overlap other approved sessions of the same volunteer (BR-20).'
+}
+
+
+// ============================================================
+// 9. READINESS / SAFETY
+// ============================================================
+
+// D-04: no readiness template. The leader creates the checklist and its items
+// for each work area; evidence files are file_object rows with
+// reference_type = READINESS_ITEM.
+Table readiness_checklist {
+  readiness_checklist_id uuid [pk]
+
+  work_area_id uuid [not null]
+  completed_by_user_id uuid
+
+  checklist_name varchar(150) [not null]
+  checklist_status varchar(30) [not null, note: 'DRAFT, IN_REVIEW, NEEDS_CORRECTION, READY, REOPENED']
+  reopen_reason text
+
+  completed_at timestamp
+}
+
+Table readiness_item {
+  readiness_item_id uuid [pk]
+
+  readiness_checklist_id uuid [not null]
+  checked_by_user_id uuid
+
+  corrective_task_id uuid [note: 'CORRECTIVE task created or linked when this item fails. Required for a failed mandatory item (BR-66).']
+
+  item_name varchar(200) [not null]
+  item_description text
+  is_required boolean [not null, default: true]
+  item_status varchar(30) [not null, note: 'PENDING, PASSED, FAILED, CORRECTIVE_ACTION, RECHECK']
+
+  checked_at timestamp
+  item_note text
+}
+
+
+// ============================================================
+// 10. CONTRIBUTION & RECOGNITION
+// ============================================================
+
+Table contribution_type {
+  contribution_type_id uuid [pk]
+
+  contribution_code varchar(50) [not null, unique]
+  contribution_name varchar(100) [not null]
+  contribution_description text
+  contribution_status varchar(30)
+}
+
+Table contribution {
+  contribution_id uuid [pk]
+  contributed_by_user_id uuid [note: 'For non-donation contributions such as labor or purchase assistance. NULL for donations.']
+  donation_id uuid [unique, note: 'One summary per donation. Donor identity and monetary amount come from donation.']
+  season_id uuid [not null]
+  contribution_type_id uuid [not null]
+  contribution_description text
+  contribution_date timestamp [not null]
+  reference_type varchar(50)
+  reference_id uuid
+
+  checks {
+    `(donation_id IS NOT NULL AND contributed_by_user_id IS NULL AND reference_type IS NULL AND reference_id IS NULL) OR (donation_id IS NULL AND contributed_by_user_id IS NOT NULL)` [name: 'contribution_single_source']
+  }
+  Note: 'Donation summaries are created on the first donation_receipt and upserted on later receipts; a pledge alone never creates a contribution. Never manually duplicate money or material quantities here. Validate matching season and contribution type (MONEY -> MONETARY_SUPPORT; MATERIAL -> MATERIAL_DONATION). For donation rows resolve identity via donation.donor_id and optional donor.user_id; for other contributions use contributed_by_user_id. Reports sum money from donation.amount only. Existing recognition_point is account-based: unlinked external donors appear in donor reports but do not receive account points.'
+}
+
+
+Table recognition_rule {
+  recognition_rule_id uuid [pk]
+
+  contribution_type_id uuid
+
+  rule_name varchar(150) [not null]
+  rule_version int [not null, default: 1]
+  rule_points int [not null]
+  rule_description text
+  rule_status varchar(30)
+  effective_from date [not null]
+  effective_to date
+
+  checks {
+    `effective_to IS NULL OR effective_to >= effective_from` [name: 'recognition_rule_valid_period']
+  }
+  Note: 'Changing points creates a new version row instead of editing an applied rule (BA 13).'
+}
+
+Table recognition_point {
+  recognition_point_id uuid [pk]
+
+  awarded_to_user_id uuid [not null]
+  season_id uuid [not null]
+  recognition_rule_id uuid [not null, note: 'Exact rule version applied.']
+  contribution_id uuid [not null, note: 'Source contribution, so every point is explainable.']
+
+  awarded_points int [not null]
+  reason text
+
+  created_at timestamp [not null]
+
+  indexes {
+    (contribution_id, recognition_rule_id, awarded_to_user_id) [unique, note: 'BR-55: one contribution is never scored twice by the same rule.']
+  }
+}
+
+Table task_material_report {
+  task_material_report_id uuid [pk]
+
+  task_id uuid [not null]
+  reported_by uuid [not null]
+  verified_by uuid
+
+  report_status varchar(30) [not null, note: 'SUBMITTED, VERIFIED, REVISION_REQUIRED']
+  report_note text
+
+  reported_at timestamp [not null]
+  verified_at timestamp
+}
+
+Table task_material_report_item {
+  task_material_report_item_id uuid [pk]
+
+  task_material_report_id uuid [not null]
+  material_allocation_item_id uuid [not null]
+
+  reported_remaining_quantity decimal(12,2) [not null, default: 0]
+  reported_damaged_quantity decimal(12,2) [not null, default: 0]
+  reported_lost_quantity decimal(12,2) [not null, default: 0]
+
+  verified_remaining_quantity decimal(12,2)
+  verified_damaged_quantity decimal(12,2)
+  verified_lost_quantity decimal(12,2)
+
+  item_note text
+}
+
+
+// ============================================================
+// 11b. NOTIFICATION, AUDIT & FILE
+// ============================================================
+
+Table notification {
+  notification_id uuid [pk]
+  recipient_user_id uuid [not null]
+
+  event_type varchar(100) [not null]
+  title varchar(200) [not null]
+  body text
+  reference_type varchar(50)
+  reference_id uuid
+
+  is_read boolean [not null, default: false]
+  created_at timestamp [not null]
+  read_at timestamp
+
+  Note: 'No sensitive data or long-lived private file URLs in title/body (BA 14).'
+}
+
+Table notification_preference {
+  user_id uuid [pk]
+  in_app_enabled boolean [not null, default: true]
+  push_enabled boolean [not null, default: true]
+  email_enabled boolean [not null, default: false]
+  updated_at timestamp
+}
+
+Table activity_log {
+  activity_log_id uuid [pk]
+  actor_user_id uuid
+  parish_id uuid
+  season_id uuid
+
+  action varchar(100) [not null, note: 'e.g. PURCHASE_REQUEST_APPROVED, CHECK_IN_APPROVED, DONATION_RECEIVED, USER_LOCKED, REPORT_EXPORTED']
+  entity_type varchar(50) [not null]
+  entity_id uuid
+  old_value jsonb
+  new_value jsonb
+  reason text
+  correlation_id uuid
+
+  created_at timestamp [not null]
+
+  indexes {
+    (entity_type, entity_id)
+    (actor_user_id, created_at)
+  }
+  Note: 'Append-only audit trail (acceptance criterion 16). Never store passwords, tokens, private file URLs or unnecessary personal data.'
+}
+
+Table file_object {
+  file_id uuid [pk]
+  uploaded_by_user_id uuid [not null]
+
+  object_key varchar(500) [not null, unique, note: 'Key in object storage; never a public URL.']
+  original_file_name varchar(255) [not null]
+  content_type varchar(100) [not null]
+  size_bytes bigint [not null]
+  checksum varchar(128)
+  purpose varchar(50) [not null, note: 'PROGRESS_EVIDENCE, PURCHASE_RECEIPT, READINESS_EVIDENCE, DONATION_EVIDENCE, OTHER']
+  file_status varchar(30) [not null, note: 'PENDING_UPLOAD, UPLOADED, ATTACHED, DELETED']
+
+  reference_type varchar(50) [note: 'TASK_PROGRESS, PURCHASE_RECEIPT, READINESS_ITEM, DONATION_RECEIPT']
+  reference_id uuid
+
+  created_at timestamp [not null]
+  completed_at timestamp
+
+  Note: 'Only UPLOADED files owned by the caller can be attached (BR-69). Downloads use short-lived authorized URLs. Type/size limits follow API Contract section 9.'
+}
+
+
+// ============================================================
+// 11. RELATIONSHIPS
+// ============================================================
+
+// -------------------------
+// Organization
+// -------------------------
+
+Ref: community.parish_id > parish.parish_id
+
+Ref: app_user.user_id - volunteer_profile.volunteer_user_id
+Ref: volunteer_profile.community_id > community.community_id
+
+Ref: app_user.role_id > role.role_id
+Ref: app_user.parish_id > parish.parish_id
+Ref: volunteer_availability.volunteer_user_id > app_user.user_id
+
+Ref: volunteer_skill.volunteer_user_id > app_user.user_id
+Ref: volunteer_skill.skill_id > skill.skill_id
+
+
+// -------------------------
+// Christmas Season
+// -------------------------
+
+Ref: christmas_season.parish_id > parish.parish_id
+Ref: christmas_season.created_by_user_id > app_user.user_id
+
+Ref: work_area.season_id > christmas_season.season_id
+Ref: work_area.community_id > community.community_id
+Ref: work_area.work_area_category_id > work_area_category.work_area_category_id
+Ref: work_area.leader_user_id > app_user.user_id
+Ref: work_area.material_officer_user_id > app_user.user_id
+
+Ref: task.work_area_id > work_area.work_area_id
+Ref: task.created_by_user_id > app_user.user_id
+Ref: task.purchase_request_id > purchase_request.purchase_request_id
+
+Ref: task_skill.task_id > task.task_id
+Ref: task_skill.skill_id > skill.skill_id
+
+Ref: task_assignment.task_id > task.task_id
+Ref: task_assignment.volunteer_user_id > app_user.user_id
+
+Ref: support_request.season_id > christmas_season.season_id
+Ref: support_request.work_area_id > work_area.work_area_id
+Ref: support_request.requested_by_user_id > app_user.user_id
+Ref: support_request_position.support_request_id > support_request.support_request_id
+Ref: support_position_skill.support_request_position_id > support_request_position.support_request_position_id
+Ref: support_position_skill.skill_id > skill.skill_id
+
+Ref: support_response.support_request_id > support_request.support_request_id
+Ref: support_response.volunteer_user_id > app_user.user_id
+Ref: support_response.responding_community_id > community.community_id
+Ref: support_request_material.support_request_id > support_request.support_request_id
+Ref: support_request_material.material_id > material.material_id
+Ref: support_response_material.support_response_id > support_response.support_response_id
+Ref: support_response_material.support_request_material_id > support_request_material.support_request_material_id
+Ref: support_response_material.source_work_area_id > work_area.work_area_id
+Ref: support_response_material.approved_by_user_id > app_user.user_id
+Ref: support_response_material.received_confirmed_by_user_id > app_user.user_id
+
+
+// -------------------------
+// Material
+// -------------------------
+
+Ref: material.material_category_id > material_category.material_category_id
+
+Ref: material_requirement.work_area_id > work_area.work_area_id
+Ref: material_requirement.material_id > material.material_id
+
+Ref: task_material.task_id > task.task_id
+Ref: task_material.material_id > material.material_id
+
+Ref: material_transaction.material_id > material.material_id
+Ref: material_transaction.work_area_id > work_area.work_area_id
+Ref: material_transaction.created_by_user_id > app_user.user_id
+
+
+// -------------------------
+// Purchase
+// -------------------------
+
+Ref: purchase_request.work_area_id > work_area.work_area_id
+Ref: purchase_request_item.purchase_request_id > purchase_request.purchase_request_id
+Ref: purchase_request_item.material_id > material.material_id
+Ref: purchase_request.requested_by_user_id > app_user.user_id
+Ref: purchase_request.approved_by_user_id > app_user.user_id
+
+Ref: purchase.purchase_request_id > purchase_request.purchase_request_id
+Ref: purchase.buyer_user_id > app_user.user_id
+Ref: purchase.confirmed_by_user_id > app_user.user_id
+Ref: purchase.task_id > task.task_id
+Ref: purchase.cost_overrun_approved_by_user_id > app_user.user_id
+
+Ref: purchase_item.purchase_id > purchase.purchase_id
+Ref: purchase_item.material_id > material.material_id
+
+
+// -------------------------
+// Donation
+// -------------------------
+
+Ref: donor.user_id > app_user.user_id
+Ref: donor.created_by_user_id > app_user.user_id
+Ref: donation.donor_id > donor.donor_id
+Ref: donation.season_id > christmas_season.season_id
+Ref: donation.created_by_user_id > app_user.user_id
+Ref: donation_item.donation_id > donation.donation_id
+Ref: donation_item.material_id > material.material_id
+Ref: donation.work_area_id > work_area.work_area_id
+Ref: donation_receipt.donation_id > donation.donation_id
+Ref: donation_receipt.received_by_user_id > app_user.user_id
+Ref: donation_receipt_item.donation_receipt_id > donation_receipt.donation_receipt_id
+Ref: donation_receipt_item.donation_item_id > donation_item.donation_item_id
+
+
+// -------------------------
+// Borrowing
+// -------------------------
+
+Ref: borrowed_item.offered_by_user_id > app_user.user_id
+Ref: borrowed_item.accepted_by_user_id > app_user.user_id
+Ref: borrowed_item.work_area_id > work_area.work_area_id
+Ref: borrowed_item.task_id > task.task_id
+Ref: borrowed_item.season_id > christmas_season.season_id
+
+Ref: borrow_transaction.borrowed_item_id > borrowed_item.borrowed_item_id
+Ref: borrow_transaction.recorded_by_user_id > app_user.user_id
+
+
+// -------------------------
+// Allocation
+// -------------------------
+
+Ref: material_allocation.work_area_id > work_area.work_area_id
+Ref: material_allocation.task_id > task.task_id
+Ref: material_allocation.allocated_by_user_id > app_user.user_id
+
+Ref: material_allocation_item.material_allocation_id > material_allocation.material_allocation_id
+Ref: material_allocation_item.material_id > material.material_id
+
+
+// -------------------------
+// Progress
+// -------------------------
+
+Ref: task_progress.task_id > task.task_id
+Ref: task_progress.submitted_by_user_id > app_user.user_id
+
+Ref: progress_evidence.task_progress_id > task_progress.task_progress_id
+Ref: progress_evidence.file_id > file_object.file_id
+
+Ref: attendance_request.task_assignment_id > task_assignment.task_assignment_id
+Ref: attendance_request.attendance_id > attendance.attendance_id
+Ref: attendance_request.requested_by_user_id > app_user.user_id
+Ref: attendance_request.reviewed_by_user_id > app_user.user_id
+
+Ref: attendance.task_assignment_id > task_assignment.task_assignment_id
+Ref: attendance.check_in_request_id - attendance_request.attendance_request_id
+
+Ref: attendance_correction.attendance_id > attendance.attendance_id
+Ref: attendance_correction.requested_by_user_id > app_user.user_id
+Ref: attendance_correction.reviewed_by_user_id > app_user.user_id
+
+
+// -------------------------
+// Readiness
+// -------------------------
+
+Ref: readiness_checklist.work_area_id > work_area.work_area_id
+Ref: readiness_checklist.completed_by_user_id > app_user.user_id
+
+Ref: readiness_item.readiness_checklist_id > readiness_checklist.readiness_checklist_id
+Ref: readiness_item.checked_by_user_id > app_user.user_id
+Ref: readiness_item.corrective_task_id > task.task_id
+
+
+// -------------------------
+// Contribution
+// -------------------------
+
+Ref: contribution.contributed_by_user_id > app_user.user_id
+Ref: contribution.donation_id > donation.donation_id
+Ref: contribution.season_id > christmas_season.season_id
+Ref: contribution.contribution_type_id > contribution_type.contribution_type_id
+
+Ref: recognition_rule.contribution_type_id > contribution_type.contribution_type_id
+
+Ref: recognition_point.awarded_to_user_id > app_user.user_id
+Ref: recognition_point.season_id > christmas_season.season_id
+Ref: recognition_point.recognition_rule_id > recognition_rule.recognition_rule_id
+Ref: recognition_point.contribution_id > contribution.contribution_id
+Ref: support_response_member.support_response_id > support_response.support_response_id
+Ref: support_response_member.support_request_position_id > support_request_position.support_request_position_id
+Ref: support_response_member.volunteer_user_id > app_user.user_id
+
+Ref: purchase_item.purchase_request_item_id > purchase_request_item.purchase_request_item_id
+
+Ref: task_progress.approved_by_user_id > app_user.user_id
+
+// -------------------------
+// Notification, audit & file
+// -------------------------
+
+Ref: notification.recipient_user_id > app_user.user_id
+Ref: notification_preference.user_id - app_user.user_id
+Ref: activity_log.actor_user_id > app_user.user_id
+Ref: file_object.uploaded_by_user_id > app_user.user_id
+
+//
+Ref: task_material_report.task_id > task.task_id
+
+Ref: task_material_report.reported_by > app_user.user_id
+Ref: task_material_report.verified_by > app_user.user_id
+
+Ref: task_material_report_item.task_material_report_id > task_material_report.task_material_report_id
+
+Ref: task_material_report_item.material_allocation_item_id > material_allocation_item.material_allocation_item_id
+
+// v3.3 -> v3.4 DESIGN CHANGE NOTES (not an executable migration):
+// donation now has 9 fields and records actual receipts, not commitments.
+// Removed community_id, pledged_amount, payment_method, receipt_reference,
+// evidence_url, donation_status, confirmed_by_user_id, confirmed_at, updated_at.
+// donation_item remains structurally unchanged; pledged_quantity is optional legacy
+// context only. Direct receipts leave it NULL; this header cannot manage pledges.
+// Before migrating live data, retain historical removed metadata in an archive,
+// resolve pending/unreceived donations, and populate actual donation_date from
+// evidence. Do not invent receipt dates. Existing cumulative receipts cannot be
+// split into historical receipt occasions without supporting records.
+
+// v3.4 -> v3.5 DESIGN CHANGE NOTES (team decisions 07/10/2026):
+// D-01 Purchase: leader approves purchase_request (approved_by = leader,
+//      decision_note/rejected_at added). Buyer is assigned through a PURCHASE
+//      task (task.task_type, task.purchase_request_id, purchase.task_id); no
+//      separate purchase assignment table. purchase.receipt_url replaced by
+//      file_object (PURCHASE_RECEIPT); purchase_item stores received quantities;
+//      purchase.cost_overrun_approved_by/at records leader approval (BR-32).
+// D-02 Donation: pledge workflow restored. donation gains donation_status,
+//      pledged_amount, work_area_id, cancel_reason, updated_at; amount = total
+//      received. New donation_receipt + donation_receipt_item; stock and
+//      contribution are posted per receipt. donation_item quantities become
+//      cached totals. This reverses the v3.4 "actual receipt only" header rule.
+// D-03 Support: support_request.support_type; new support_request_material and
+//      support_response_material; TRANSFER_OUT / TRANSFER_IN ledger entries.
+// D-04 Readiness: no template tables; readiness_item.corrective_task_id added.
+// D-05 Borrowed item: owner_user_id replaced by offered_by_user_id (volunteer
+//      entering on behalf of the lender) + owner_name/phone/address/note;
+//      accepted_by/at, task_id, created_at added; expected_return_date NOT NULL.
+// D-06 Attendance: new attendance_request (leader approves each check-in) and
+//      attendance_correction; attendance loses corrected_by_user_id,
+//      correction_reason, corrected_at and gains check_in_request_id.
+// Also: app_user.parish_id, volunteer_availability, christmas_season
+//      .estimated_budget, task.completion_criteria, recognition_rule version and
+//      effective period, recognition_point.contribution_id (unique scoring),
+//      material_transaction created_by/indexes, notification,
+//      notification_preference, activity_log, file_object;
+//      progress_evidence.file_url -> file_id.
