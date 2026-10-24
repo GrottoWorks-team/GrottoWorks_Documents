@@ -1,9 +1,15 @@
 // ============================================================
-// GROTTOWORKS - ERD v3.6
+// GROTTOWORKS - ERD v3.6.2
 // GrottoWorks - A Parish Christmas Grotto and Decoration
 // Management System
 //
 // Database Design: PostgreSQL-oriented DBML
+// v3.6.2 (24/10/2026): removed DRAFT from the logical baseline; tasks are
+// created in OPEN; Task attributes and constraints aligned with API Contract
+// v1.3.2; clarified Support ownership between TaskExecution and Resource.
+// v3.6.1 (24/10/2026): logical-model alignment only. No implementation-only
+// projection, token, outbox, concurrency or database-partition tables are
+// introduced. Clarified Season, Work Area, category and Task business rules.
 // v3.6 (14/10/2026): season created in PLANNING (no DRAFT); unique season name
 // and year per parish; status notes aligned with API Contract v1.3.
 // v3.5 (07/10/2026): team decisions D-01..D-06 -- leader approves purchase
@@ -21,7 +27,7 @@
 // manual task completion approval; multi-material purchase requests.
 // DB constraints cover local checks and references. Cross-table business
 // rules in Notes must be enforced by the application in transactions.
-// Draft requests may be empty; submitted support/purchase requests must
+// PLANNING requests may be empty; submitted support/purchase requests must
 // contain at least one position/item. Validate in the service.
 // Corrected one-to-one DBML FK direction: volunteer_profile references app_user.
 // ============================================================
@@ -150,6 +156,8 @@ Table christmas_season {
     (parish_id, season_year) [unique]
     (parish_id, season_name) [unique]
   }
+
+  Note: 'A season is created in PLANNING. Activation requires at least one work area, and every work area must have both a leader and a material officer. ACTIVE seasons in the same parish may not overlap, including boundary dates. ARCHIVED seasons are read-only.'
 }
 
 Table work_area_category {
@@ -158,14 +166,14 @@ Table work_area_category {
   category_code varchar(50) [not null, unique]
   category_name varchar(100) [not null]
   category_description text
-  category_status varchar(30) [not null]
+  category_status varchar(30) [not null, note: 'ACTIVE, INACTIVE. Only ACTIVE categories may be assigned to a work area.']
 }
 
 Table work_area {
   work_area_id uuid [pk]
 
   season_id uuid [not null]
-  community_id uuid
+  community_id uuid [note: 'Optional. NULL means a parish-level work area; clearing the value returns it to parish level.']
   work_area_category_id uuid
   leader_user_id uuid
   material_officer_user_id uuid
@@ -174,10 +182,12 @@ Table work_area {
   work_area_description text
   start_date date
   deadline date
-  work_area_status varchar(30) [not null]
+  work_area_status varchar(30) [not null, note: 'PLANNED, IN_PROGRESS, READINESS_REVIEW, NEEDS_CORRECTION, READY, COMPLETED']
 
   created_at timestamp [not null]
   updated_at timestamp
+
+  Note: 'The community, when assigned, must belong to the same parish as the owning season. The category, when assigned or changed, must be ACTIVE. IN_PROGRESS moves to READINESS_REVIEW only when every task other than CANCELLED is COMPLETED. An ARCHIVED season makes its work areas read-only.'
 }
 
 Table task {
@@ -189,23 +199,25 @@ Table task {
   task_type varchar(30) [not null, default: 'WORK', note: 'WORK, PURCHASE, CORRECTIVE']
   purchase_request_id uuid [note: 'Required when task_type = PURCHASE: the approved purchase request this buying task fulfils (D-01).']
 
-  task_name varchar(200) [not null]
-  task_description text
-  completion_criteria text [note: 'Leader-defined completion criteria shown in the review package.']
-  task_priority varchar(30) [not null]
-  estimated_hours decimal(6,2)
-  required_volunteer_count int
-  start_date date
-  deadline date
-  task_status varchar(30) [not null, note: 'DRAFT, OPEN, NOT_STARTED, IN_PROGRESS, SUBMITTED, REVISION_REQUIRED, COMPLETED, CANCELLED']
+  name varchar(160) [not null]
+  description varchar(2000)
+  completion_criteria text [note: 'Leader-defined completion criteria shown in the review package; maximum 4000 characters.']
+  priority varchar(30) [not null, note: 'LOW, MEDIUM, HIGH, CRITICAL']
+  estimated_minutes int [not null, note: 'Positive duration estimate exposed as estimatedMinutes by the API.']
+  required_volunteers int [not null]
+  start_at timestamp
+  deadline timestamp [not null]
+  status varchar(30) [not null, note: 'OPEN, NOT_STARTED, IN_PROGRESS, SUBMITTED, REVISION_REQUIRED, COMPLETED, CANCELLED. Created in OPEN.']
 
   created_at timestamp [not null]
   updated_at timestamp
 
   checks {
     `(task_type = 'PURCHASE' AND purchase_request_id IS NOT NULL) OR (task_type <> 'PURCHASE' AND purchase_request_id IS NULL)` [name: 'task_purchase_link']
+    `estimated_minutes > 0` [name: 'task_positive_estimate']
+    `required_volunteers > 0` [name: 'task_positive_volunteer_count']
   }
-  Note: 'PURCHASE tasks are created by the work-area leader only after the purchase request is APPROVED. The buyer is the volunteer whose assignment on this task is ACCEPTED. A PURCHASE task becomes COMPLETED automatically when the material officer confirms delivery of its purchase (BR-65). CORRECTIVE tasks are linked from readiness_item.corrective_task_id.'
+  Note: 'A task is created directly in OPEN when the leader submits the create form; assigning a volunteer at creation time is optional and assignment remains a separate workflow. The leader explicitly closes recruitment with Ready to start to move OPEN to NOT_STARTED. Cancelling requires a reason, cancels open assignments, and preserves attendance and historical records. PURCHASE tasks are created by the work-area leader only after the purchase request is APPROVED. The buyer is the volunteer whose assignment on this task is ACCEPTED. A PURCHASE task becomes COMPLETED automatically when the material officer confirms delivery of its purchase (BR-65). CORRECTIVE tasks are linked from readiness_item.corrective_task_id. Task scheduling must remain within the owning work area and season; a schedule conflict is a warning and does not require an override.'
 }
 
 Table task_skill {
@@ -236,6 +248,8 @@ Table task_assignment {
   approved_at timestamp
   rejected_at timestamp
   assignment_note text
+
+  Note: 'A direct assignment in PENDING reserves one required-volunteer slot; a volunteer application in PENDING does not reserve capacity. If an ACCEPTED volunteer becomes LOCKED, keep the assignment and history, block that user from further task actions, and let the leader reassign as needed.'
 }
 
 Table support_request {
@@ -246,10 +260,10 @@ Table support_request {
   support_type varchar(30) [not null, note: 'STAFFING, MATERIAL, MIXED']
   request_description text
   deadline date
-  request_status varchar(30) [not null, note: 'DRAFT, PUBLISHED, PARTIALLY_FULFILLED, FULFILLED, CLOSED, CANCELLED']
+  request_status varchar(30) [not null, note: 'PLANNING, PUBLISHED, PARTIALLY_FULFILLED, FULFILLED, CLOSED, CANCELLED']
   created_at timestamp [not null]
 
-  Note: 'D-03: a request may ask for people (positions) and/or materials. STAFFING needs >= 1 position, MATERIAL needs >= 1 material line, MIXED needs both when published (BR-62). Total headcount is the sum of position counts, not skill counts. Validate that season matches work area.'
+  Note: 'TaskExecution owns creation, update, publication, responses, leader decisions and Support Request/Response statuses. A request may ask for people (positions) and/or materials. STAFFING needs >= 1 position, MATERIAL needs >= 1 material line, MIXED needs both when published (BR-62). Total headcount is the sum of position counts, not skill counts. Validate that season matches work area.'
 }
 
 Table support_request_position {
@@ -301,7 +315,7 @@ Table support_response_member {
   indexes {
     (support_response_id, volunteer_user_id) [unique]
   }
-  Note: 'Service must validate response and position belong to the same request, all required skills, capacity, and at most one active position per person in that request, including across responses. Individual response volunteer must match its member; community response can name multiple members.'
+  Note: 'Service must validate response and position belong to the same request, all required skills, capacity, and at most one active position per person in that request, including across responses. Missing any required skill cannot be overridden in the Support workflow. Individual response volunteer must match its member; community response can name multiple members.'
 }
 
 
@@ -345,7 +359,7 @@ Table support_response_material {
     `received_usable_quantity IS NULL OR received_usable_quantity >= 0` [name: 'support_response_material_nonnegative_usable']
     `received_unusable_quantity IS NULL OR received_unusable_quantity >= 0` [name: 'support_response_material_nonnegative_unusable']
   }
-  Note: 'Material support = stock transfer between work areas (D-03). Offer must not exceed unallocated stock of source_work_area_id at approval time (BR-63). On approval the service posts TRANSFER_OUT on the source work area; the receiving material officer confirms received quantities, then TRANSFER_IN posts only usable quantity (BR-64). Source and target work areas must belong to the same season and must be different. Individual volunteers donating materials use the donation pledge workflow instead.'
+  Note: 'Material support = stock transfer between work areas (D-03). TaskExecution owns the Support Response status and leader approval decision. Resource checks available stock, posts TRANSFER_OUT for the source work area, lets one receiving material officer confirm receipt, and posts TRANSFER_IN for usable quantity; no second confirmation is required for high-value material. TaskExecution keeps the transfer pending synchronization until it consumes or reconciles the Resource result, retrying idempotently when delivery is delayed. Offer must not exceed unallocated stock of source_work_area_id at approval time (BR-63). Source and target work areas must belong to the same season and must be different. Individual volunteers donating materials use the donation pledge workflow instead.'
 }
 
 
@@ -439,7 +453,7 @@ Table purchase_request {
   requested_by_user_id uuid [not null]
   approved_by_user_id uuid [note: 'Work-area leader who approved or rejected (D-01).']
   request_reason text
-  request_status varchar(30) [not null, note: 'DRAFT, PENDING_APPROVAL, APPROVED, REJECTED, BUYER_ASSIGNED, PURCHASED, PARTIALLY_RECEIVED, COMPLETED, CANCELLED']
+  request_status varchar(30) [not null, note: 'PLANNING, PENDING_APPROVAL, APPROVED, REJECTED, BUYER_ASSIGNED, PURCHASED, PARTIALLY_RECEIVED, COMPLETED, CANCELLED']
   decision_note text [note: 'Required when REJECTED (BR-31).']
   approved_at timestamp
   rejected_at timestamp
@@ -706,7 +720,7 @@ Table task_progress {
     `progress_percent >= 0 AND progress_percent <= 100` [name: 'task_progress_percent_range']
     `(approved_by_user_id IS NULL AND approved_at IS NULL) OR (approved_by_user_id IS NOT NULL AND approved_at IS NOT NULL AND progress_percent = 100 AND approved_at >= submitted_at)` [name: 'task_progress_completion_approval']
   }
-  Note: '100 percent submission does not complete the task automatically. Service must authorize the responsible work-area leader and atomically set approval fields and task.task_status to COMPLETED. Prevent volunteers from setting approval fields.'
+  Note: '100 percent submission does not complete the task automatically. Service must authorize the responsible work-area leader and atomically set approval fields and task.status to COMPLETED. Prevent volunteers from setting approval fields.'
 }
 
 Table progress_evidence {
@@ -735,7 +749,7 @@ Table attendance_request {
   review_note text [note: 'Required when REJECTED.']
   reviewed_at timestamp
 
-  Note: 'D-06: every check-in is approved individually by the leader of the task work area (BR-58, BR-59). At most one PENDING check-in per assignment and none while a session is OPEN. Pending or rejected requests never create attendance or hours (BR-61).'
+  Note: 'D-06: every check-in is approved individually by the leader of the task work area (BR-58, BR-59). Check-in records server time only; GPS, geofence and photo evidence are not required. At most one PENDING check-in per assignment and none while a session is OPEN. Pending or rejected requests never create attendance or hours (BR-61).'
 }
 
 Table attendance {
@@ -795,7 +809,7 @@ Table readiness_checklist {
   completed_by_user_id uuid
 
   checklist_name varchar(150) [not null]
-  checklist_status varchar(30) [not null, note: 'DRAFT, IN_REVIEW, NEEDS_CORRECTION, READY, REOPENED']
+  checklist_status varchar(30) [not null, note: 'PLANNING, IN_REVIEW, NEEDS_CORRECTION, READY, REOPENED']
   reopen_reason text
 
   completed_at timestamp
@@ -1258,3 +1272,18 @@ Ref: task_material_report_item.material_allocation_item_id > material_allocation
 //      (parish_id, season_name) added next to (parish_id, season_year).
 // material_requirement.existing_quantity: display only, not part of shortage.
 // task_assignment.assignment_status: allowed values documented.
+
+// v3.6 -> v3.6.1 LOGICAL ALIGNMENT NOTES (24/10/2026):
+// No table or attribute was added, removed or renamed. Clarified that community
+//      assignment on a work area is optional and reversible; category assignment
+//      requires an ACTIVE category; ARCHIVED seasons are read-only; activation
+//      readiness and non-overlapping ACTIVE seasons are business constraints;
+//      Task scheduling has no override concept in the current logical baseline.
+
+// v3.6.1 -> v3.6.2 LOGICAL ALIGNMENT NOTES (24/10/2026):
+// DRAFT removed from Task, Support Request, Purchase Request and Readiness
+//      Checklist. Their preparation states are OPEN for Task and PLANNING for
+//      the other aggregates. Task field names, limits, required fields and
+//      timestamps aligned with API Contract v1.3.2. Support workflow
+//      ownership belongs to TaskExecution; Resource owns stock checks and the
+//      TRANSFER_OUT / receipt confirmation / TRANSFER_IN operations.
