@@ -187,7 +187,7 @@ Table work_area {
   created_at timestamp [not null]
   updated_at timestamp
 
-  Note: 'The community, when assigned, must belong to the same parish as the owning season. The category, when assigned or changed, must be ACTIVE. An ARCHIVED season makes its work areas read-only.'
+  Note: 'The community, when assigned, must belong to the same parish as the owning season. The category, when assigned or changed, must be ACTIVE. IN_PROGRESS moves to READINESS_REVIEW only when every task other than CANCELLED is COMPLETED. An ARCHIVED season makes its work areas read-only.'
 }
 
 Table task {
@@ -217,7 +217,7 @@ Table task {
     `estimated_minutes > 0` [name: 'task_positive_estimate']
     `required_volunteers > 0` [name: 'task_positive_volunteer_count']
   }
-  Note: 'A task is created directly in OPEN when the leader submits the create form; assigning a volunteer at creation time is optional and assignment remains a separate workflow. PURCHASE tasks are created by the work-area leader only after the purchase request is APPROVED. The buyer is the volunteer whose assignment on this task is ACCEPTED. A PURCHASE task becomes COMPLETED automatically when the material officer confirms delivery of its purchase (BR-65). CORRECTIVE tasks are linked from readiness_item.corrective_task_id. Task scheduling must remain within the owning work area and season; the current logical baseline has no schedule-override concept.'
+  Note: 'A task is created directly in OPEN when the leader submits the create form; assigning a volunteer at creation time is optional and assignment remains a separate workflow. The leader explicitly closes recruitment with Ready to start to move OPEN to NOT_STARTED. Cancelling requires a reason, cancels open assignments, and preserves attendance and historical records. PURCHASE tasks are created by the work-area leader only after the purchase request is APPROVED. The buyer is the volunteer whose assignment on this task is ACCEPTED. A PURCHASE task becomes COMPLETED automatically when the material officer confirms delivery of its purchase (BR-65). CORRECTIVE tasks are linked from readiness_item.corrective_task_id. Task scheduling must remain within the owning work area and season; a schedule conflict is a warning and does not require an override.'
 }
 
 Table task_skill {
@@ -248,6 +248,8 @@ Table task_assignment {
   approved_at timestamp
   rejected_at timestamp
   assignment_note text
+
+  Note: 'A direct assignment in PENDING reserves one required-volunteer slot; a volunteer application in PENDING does not reserve capacity. If an ACCEPTED volunteer becomes LOCKED, keep the assignment and history, block that user from further task actions, and let the leader reassign as needed.'
 }
 
 Table support_request {
@@ -313,7 +315,7 @@ Table support_response_member {
   indexes {
     (support_response_id, volunteer_user_id) [unique]
   }
-  Note: 'Service must validate response and position belong to the same request, all required skills, capacity, and at most one active position per person in that request, including across responses. Individual response volunteer must match its member; community response can name multiple members.'
+  Note: 'Service must validate response and position belong to the same request, all required skills, capacity, and at most one active position per person in that request, including across responses. Missing any required skill cannot be overridden in the Support workflow. Individual response volunteer must match its member; community response can name multiple members.'
 }
 
 
@@ -357,7 +359,7 @@ Table support_response_material {
     `received_usable_quantity IS NULL OR received_usable_quantity >= 0` [name: 'support_response_material_nonnegative_usable']
     `received_unusable_quantity IS NULL OR received_unusable_quantity >= 0` [name: 'support_response_material_nonnegative_unusable']
   }
-  Note: 'Material support = stock transfer between work areas (D-03). TaskExecution owns the Support Response status and leader approval decision. Resource checks available stock, posts TRANSFER_OUT for the source work area, lets the receiving material officer confirm receipt, and posts TRANSFER_IN for usable quantity. TaskExecution then updates the Support Request/Response status from the Resource result. Offer must not exceed unallocated stock of source_work_area_id at approval time (BR-63). Source and target work areas must belong to the same season and must be different. Individual volunteers donating materials use the donation pledge workflow instead.'
+  Note: 'Material support = stock transfer between work areas (D-03). TaskExecution owns the Support Response status and leader approval decision. Resource checks available stock, posts TRANSFER_OUT for the source work area, lets one receiving material officer confirm receipt, and posts TRANSFER_IN for usable quantity; no second confirmation is required for high-value material. TaskExecution keeps the transfer pending synchronization until it consumes or reconciles the Resource result, retrying idempotently when delivery is delayed. Offer must not exceed unallocated stock of source_work_area_id at approval time (BR-63). Source and target work areas must belong to the same season and must be different. Individual volunteers donating materials use the donation pledge workflow instead.'
 }
 
 
@@ -747,7 +749,7 @@ Table attendance_request {
   review_note text [note: 'Required when REJECTED.']
   reviewed_at timestamp
 
-  Note: 'D-06: every check-in is approved individually by the leader of the task work area (BR-58, BR-59). At most one PENDING check-in per assignment and none while a session is OPEN. Pending or rejected requests never create attendance or hours (BR-61).'
+  Note: 'D-06: every check-in is approved individually by the leader of the task work area (BR-58, BR-59). Check-in records server time only; GPS, geofence and photo evidence are not required. At most one PENDING check-in per assignment and none while a session is OPEN. Pending or rejected requests never create attendance or hours (BR-61).'
 }
 
 Table attendance {
