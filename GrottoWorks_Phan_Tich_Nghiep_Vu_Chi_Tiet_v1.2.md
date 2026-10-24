@@ -1,6 +1,6 @@
 # Phân tích nghiệp vụ chi tiết hệ thống GrottoWorks
 
-**Phiên bản:** 1.2 · **Cập nhật:** 14/10/2026
+**Phiên bản:** 1.2.2 · **Cập nhật:** 24/10/2026
 
 ### Lịch sử thay đổi
 
@@ -9,6 +9,8 @@
 | 1.0 | — | Baseline ban đầu |
 | 1.1 | 07/10/2026 | Áp dụng 6 quyết định của nhóm: (D-01) Work Area Leader duyệt purchase request và giao volunteer đi mua bằng task mua; (D-02) khôi phục pledge quyên góp, xác nhận nhận nhiều lần; (D-03) support request gồm nhân lực và/hoặc vật tư; (D-04) không dùng mẫu readiness checklist; (D-05) volunteer nhập thông tin người cho mượn; (D-06) Leader duyệt từng yêu cầu check-in. Bổ sung BR-58 → BR-70, trạng thái, phân quyền, thông báo, ngoại lệ và tiêu chí nghiệm thu tương ứng. Đồng bộ với ERD v3.5 và API Contract v1.2 |
 | 1.2 | 14/10/2026 | Season không còn trạng thái `Draft`: tạo mới ở `Planning` (đã áp dụng trong code). BR-02: tên **và** năm season duy nhất trong giáo xứ. Đồng bộ với ERD v3.6 và API Contract v1.3 |
+| 1.2.1 | 23/10/2026 | Đồng bộ với phần backend đã triển khai: community tham gia season thông qua work area thay vì danh sách riêng; season archived là read-only; lịch Task chưa hỗ trợ override trong baseline hiện tại; bổ sung quy tắc category và unassign community của work area. |
+| 1.2.2 | 24/10/2026 | Loại bỏ trạng thái `Draft` khỏi baseline; Task được tạo trực tiếp ở `Open`; các aggregate cần giai đoạn chuẩn bị dùng `Planning`. Sửa quyền System Admin theo API Contract và chốt ownership Support giữa TaskExecution và Resource. |
 
 ## 1. Mục đích tài liệu
 
@@ -247,8 +249,8 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 ### 7.1. Giai đoạn lập kế hoạch
 
 1. Ban phụ trách tạo mùa Giáng sinh ở trạng thái `Planning`.
-2. Ban phụ trách xác nhận các cộng đoàn tham gia.
-3. Ban phụ trách tạo các khu vực cần triển khai.
+2. Ban phụ trách tạo các khu vực cần triển khai. Mỗi work area có thể để ở cấp giáo xứ hoặc gán cho một community; hệ thống không duy trì danh sách community tham gia riêng ở cấp season.
+3. Khi cần thay đổi phạm vi phụ trách, Ban phụ trách có thể gán community khác hoặc bỏ gán để đưa work area về cấp giáo xứ.
 4. Mỗi khu vực được gán trưởng khu vực, cán bộ vật tư, lịch và hạn hoàn thành.
 5. Trưởng khu vực chia công trình thành các task.
 6. Mỗi task được gắn kỹ năng, số người, thời lượng, vật tư và tiêu chí hoàn thành.
@@ -314,9 +316,9 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 **Ngoại lệ:**
 
 - Không kích hoạt nếu chưa có work area.
-- Không kích hoạt nếu một work area đang hoạt động nhưng thiếu leader hoặc material officer.
+- Không kích hoạt nếu bất kỳ work area nào của season thiếu leader hoặc material officer.
 - Ngày kết thúc phải sau ngày bắt đầu.
-- Không cho phép hai mùa `Active` trùng thời gian nếu chính sách giáo xứ không cho phép.
+- Không cho phép hai mùa `Active` của cùng giáo xứ có khoảng thời gian giao nhau, kể cả trùng ngày biên.
 
 ### 8.2. Tạo task và phân công tình nguyện viên
 
@@ -329,9 +331,10 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 3. Xác định số volunteer và thời lượng dự kiến.
 4. Gắn một hoặc nhiều skill.
 5. Gắn nhu cầu vật tư liên quan.
-6. Công bố task hoặc chọn volunteer để phân công.
-7. Hệ thống hiển thị skill, community, availability và cảnh báo xung đột.
-8. Volunteer nhận thông báo và chọn `Accepted` hoặc `Declined`.
+6. Khi Leader gửi form, hệ thống tạo task trực tiếp ở trạng thái `Open`.
+7. Leader có thể chọn volunteer để phân công ngay hoặc để trống và thực hiện assignment sau; việc tạo task không phụ thuộc assignment.
+8. Hệ thống hiển thị skill, community, availability và cảnh báo xung đột khi phân công.
+9. Volunteer nhận thông báo và chọn `Accepted` hoặc `Declined`.
 
 **Đăng ký tự nguyện:**
 
@@ -579,6 +582,19 @@ Quy trình:
 7. Vật tư được duyệt: hệ thống ghi `TRANSFER_OUT` ở work area nguồn; khi nhận hàng, Material Officer bên nhận xác nhận số lượng usable và hệ thống ghi `TRANSFER_IN` cho phần usable.
 8. Khi đủ số người và đủ vật tư yêu cầu, request thành `Fulfilled`; nếu chỉ đáp ứng một phần thì `Partially Fulfilled`.
 
+**Ranh giới ownership:**
+
+| Nghiệp vụ | Service chịu trách nhiệm |
+|---|---|
+| Tạo/cập nhật Support Request | TaskExecution |
+| Volunteer/Community phản hồi hỗ trợ | TaskExecution |
+| Leader duyệt hoặc từ chối hỗ trợ | TaskExecution |
+| Kiểm tra tồn kho khả dụng | Resource |
+| Xuất vật tư từ Work Area nguồn (`TRANSFER_OUT`) | Resource |
+| MO xác nhận đã nhận vật tư | Resource |
+| Nhập vật tư vào Work Area đích (`TRANSFER_IN`) | Resource |
+| Cập nhật trạng thái Support Request/Response | TaskExecution |
+
 ### 8.12. Readiness và an toàn
 
 Checklist do Work Area Leader tạo cho từng work area (không dùng mẫu cấu hình sẵn). Leader nhập từng mục và đánh dấu bắt buộc hoặc tùy chọn. Ví dụ với hang đá:
@@ -630,11 +646,13 @@ Planned -> In Progress -> Readiness Review -> Ready -> Completed
 ### 9.3. Task
 
 ```text
-Not Started -> In Progress -> Submitted -> Completed
-                              `-> Revision Required -> In Progress
+OPEN -> NOT_STARTED -> IN_PROGRESS -> SUBMITTED -> COMPLETED
+                                  `-> REVISION_REQUIRED -> IN_PROGRESS
 
-Not Started/In Progress -> Cancelled
+OPEN/NOT_STARTED/IN_PROGRESS -> CANCELLED
 ```
+
+Task được tạo trực tiếp ở `Open` khi Leader gửi form. Task chưa cần có assignment tại thời điểm tạo.
 
 Task loại `PURCHASE` không cần Leader nghiệm thu: hệ thống tự chuyển `Completed` khi purchase của task được Material Officer xác nhận giao hàng.
 
@@ -662,9 +680,9 @@ Attendance Correction: Pending -> Approved / Rejected
 Mọi purchase request đều do Work Area Leader duyệt:
 
 ```text
-Draft -> Pending Approval -> Approved -> Buyer Assigned -> Purchased -> Partially Received -> Completed
-                         `-> Rejected                                `-> Completed
-Draft/Pending Approval/Approved -> Cancelled
+Planning -> Pending Approval -> Approved -> Buyer Assigned -> Purchased -> Partially Received -> Completed
+                            `-> Rejected                                `-> Completed
+Planning/Pending Approval/Approved -> Cancelled
 ```
 
 - `Buyer Assigned`: volunteer đã chấp nhận task mua.
@@ -701,8 +719,8 @@ Returned -> Good / Damaged / Lost
 ### 9.7a. Support Request
 
 ```text
-Draft -> Published -> Partially Fulfilled -> Fulfilled -> Closed
-Draft/Published -> Cancelled
+Planning -> Published -> Partially Fulfilled -> Fulfilled -> Closed
+Planning/Published -> Cancelled
 Support Response Material: Pending -> Approved -> Transferred
                                   `-> Rejected / Cancelled
 ```
@@ -734,14 +752,15 @@ Chỉ report đã được Material Officer xác minh mới làm thay đổi off
 - **BR-02:** Tên season và năm season đều phải duy nhất trong phạm vi giáo xứ.
 - **BR-03:** Ngày kết thúc phải sau ngày bắt đầu.
 - **BR-04:** Work area thuộc đúng một season.
-- **BR-05:** Work area có thể là cấp giáo xứ hoặc thuộc một community.
+- **BR-05:** Work area có thể là cấp giáo xứ hoặc thuộc một community cùng giáo xứ với season. Gán `communityId = null` đưa work area trở lại cấp giáo xứ.
 - **BR-06:** Mỗi work area hoạt động có một leader và một material officer chính.
-- **BR-07:** Dữ liệu season đã archive chỉ được thay đổi qua quyền đặc biệt và phải ghi log.
+- **BR-07:** Season đã archive và dữ liệu planning trực thuộc là read-only; không role nào được sửa qua các API nghiệp vụ thông thường.
+- **BR-07a:** Work area chỉ được gắn category đang `ACTIVE`; category không tồn tại hoặc đã `INACTIVE` không được dùng khi tạo hay cập nhật work area.
 
 ### 10.2. Task và volunteer
 
 - **BR-08:** Task thuộc đúng một work area.
-- **BR-09:** Lịch task phải nằm trong lịch của work area và season, trừ trường hợp override.
+- **BR-09:** Lịch task phải nằm trong lịch của work area và season. Baseline hiện tại chưa hỗ trợ schedule override; chỉ bổ sung override khi API Contract và data model có trường lý do rõ ràng.
 - **BR-10:** Một task có thể cần nhiều skill và nhiều volunteer.
 - **BR-11:** Chỉ tài khoản active mới được assign hoặc đăng ký.
 - **BR-12:** Assignment trực tiếp phải được volunteer phản hồi.
@@ -828,21 +847,21 @@ Ký hiệu: `M` quản lý, `A` phê duyệt, `S` gửi dữ liệu, `V` xem, `-
 
 | Chức năng | Committee | Leader | Material Officer | Volunteer | Admin |
 |---|:---:|:---:|:---:|:---:|:---:|
-| Season | M | V | V | V | A |
-| Community và Work Area | M | M* | V* | V | A |
-| Task | V | M* | V* | S/V* | A |
-| Assignment | V | M/A* | V* | S/V bản thân | A |
-| Attendance (duyệt check-in, sửa giờ) | V | A* | V* | S/M bản thân | A |
-| Progress | V | A* | V* | S bản thân | A |
-| Material Requirement | V | V* | M* | V | A |
-| Purchase Request | V | A* (duyệt, tạo task mua) | M/S* | S/V task mua của bản thân | A |
-| Donation | V | V* | M* (ghi nhận, xác nhận nhận) | S pledge bản thân / V | A/M |
-| Borrowed Item | V | V* | M/A* | S loan offer (kể cả nhập giùm) / V bản thân | A |
-| Support Request | V/điều phối | M* | M* (đồng ý xuất/xác nhận nhận vật tư) | S response | A |
-| Allocation | V | V* | M* | V | A |
-| Task Material Report | V | V* | A/M* | S bản thân* | A |
-| Readiness | V/A | M/A* | V* | S bằng chứng | A |
-| Report | V/Export | V* | V* | V bản thân | A |
+| Season | M | V | V | V | M/A |
+| Community và Work Area | M | M* | V* | V | M |
+| Task | V | M* | V* | S/V* | V |
+| Assignment | V | M/A* | V* | S/V bản thân | - |
+| Attendance (duyệt check-in, sửa giờ) | V | A* | V* | S/M bản thân | V phiên mở lâu |
+| Progress | V | A* | V* | S bản thân | V |
+| Material Requirement | V | V* | M* | V | V |
+| Purchase Request | V | A* (duyệt, tạo task mua) | M/S* | S/V task mua của bản thân | - |
+| Donation | V | V* | M* (ghi nhận, xác nhận nhận) | S pledge bản thân / V | M donor |
+| Borrowed Item | V | V* | M/A* | S loan offer (kể cả nhập giùm) / V bản thân | - |
+| Support Request | V/điều phối | M* | M* (phản hồi vật tư, xác nhận nhận) | S response | V |
+| Allocation | V | V* | M* | V | - |
+| Task Material Report | V | V* | A/M* | S bản thân* | - |
+| Readiness | V/A | M/A* | V* | S bằng chứng | - |
+| Report | V/Export | V* | V* | V bản thân | - |
 | User, Role, Category | - | - | - | - | M |
 
 ## 12. Báo cáo và chỉ số
@@ -1042,7 +1061,11 @@ Hệ thống đạt baseline nghiệp vụ khi chứng minh được các kịch
 | D-05 | Người cho mượn không có tài khoản | Volunteer nhập thông tin người cho mượn giùm và là đầu mối liên hệ |
 | D-06 | Check-in | Leader duyệt từng yêu cầu check-in của từng người; check-out không cần duyệt |
 | R-06 (14/10/2026) | Trạng thái season | Bỏ `Draft`; season tạo ở `Planning` |
+| R-10 (23/10/2026) | Community của season và work area | Không có danh sách community tham gia riêng ở season. Community được chọn tùy chọn trên từng work area; có thể bỏ gán để work area trở về cấp giáo xứ. |
+| R-11 (23/10/2026) | Schedule override | Chưa hỗ trợ trong baseline vì request và data model chưa có lý do override; Task phải nằm trong lịch work area và season. |
 | R-09 (08/10/2026) | Season trùng lặp | Tên và năm season đều duy nhất trong giáo xứ |
+| R-12 (24/10/2026) | Trạng thái khởi tạo | Loại bỏ `Draft` khỏi baseline. Task tạo trực tiếp ở `Open`; Purchase Request, Support Request và Readiness Checklist dùng `Planning` cho giai đoạn chuẩn bị. |
+| R-13 (24/10/2026) | Ownership Support | TaskExecution sở hữu Support Request/Response và trạng thái; Resource sở hữu kiểm tra tồn kho, `TRANSFER_OUT`, xác nhận nhận và `TRANSFER_IN`. |
 
 ### 19.2. Vấn đề còn cần stakeholder xác nhận
 
