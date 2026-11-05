@@ -1,6 +1,6 @@
 # Phân tích nghiệp vụ chi tiết hệ thống GrottoWorks
 
-**Phiên bản:** 1.2.2 · **Cập nhật:** 24/10/2026
+**Phiên bản:** 1.2.3 · **Cập nhật:** 05/11/2026
 
 ### Lịch sử thay đổi
 
@@ -11,6 +11,7 @@
 | 1.2 | 14/10/2026 | Season không còn trạng thái `Draft`: tạo mới ở `Planning` (đã áp dụng trong code). BR-02: tên **và** năm season duy nhất trong giáo xứ. Đồng bộ với ERD v3.6 và API Contract v1.3 |
 | 1.2.1 | 23/10/2026 | Đồng bộ với phần backend đã triển khai: community tham gia season thông qua work area thay vì danh sách riêng; season archived là read-only; lịch Task chưa hỗ trợ override trong baseline hiện tại; bổ sung quy tắc category và unassign community của work area. |
 | 1.2.2 | 24/10/2026 | Loại bỏ trạng thái `Draft` khỏi baseline; Task được tạo trực tiếp ở `Open`; các aggregate cần giai đoạn chuẩn bị dùng `Planning`. Sửa quyền System Admin theo API Contract, chốt ownership Support giữa TaskExecution và Resource, và bổ sung các quyết định nghiệp vụ Q02/Q08/Q12–Q17/Q29/Q30. |
+| 1.2.3 | 05/11/2026 | Đồng bộ công thức vật tư 8.5 với backend: shortage không tính phần trả về từ task (R-24). Material report được lập cả cho task `Cancelled` còn vật tư đã cấp, assignee hoặc Material Officer gửi (BR-44, R-25). Allocation cấp cho work area được xem là đã tiêu thụ (R-26). |
 
 ## 1. Mục đích tài liệu
 
@@ -280,7 +281,7 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 6. Trưởng khu vực nghiệm thu:
    - Đạt: chuyển `Completed`.
    - Chưa đạt: chuyển `Revision Required`, ghi lý do và yêu cầu sửa.
-7. Sau khi task ở trạng thái `Completed`, volunteer phụ trách gửi material report nếu task có vật tư đã được phân bổ.
+7. Sau khi task ở trạng thái `Completed`, volunteer phụ trách gửi material report nếu task có vật tư đã được phân bổ. Nếu task bị `Cancelled` khi đã nhận vật tư, volunteer phụ trách hoặc Material Officer gửi material report để thu hồi.
 8. Material Officer của work area kiểm tra thực tế và xác minh material report trước khi hệ thống cập nhật số liệu vật tư chính thức.
 
 ### 7.4. Giai đoạn readiness và tổng kết
@@ -421,18 +422,24 @@ Confirmed Available Quantity
   = Opening Usable Stock
   + Confirmed Purchase Delivery
   + Confirmed Usable Donation
-  + Confirmed Borrowed Quantity
   + Verified Usable Return From Task
+  + Support Transfer In
+  - Support Transfer Out
   - Disposed / Damaged / Lost Quantity
 
+Allocated Quantity
+  = tổng allocated_quantity đã cấp (không bao giờ giảm, BR-51)
+
 Unallocated Quantity
-  = Confirmed Available Quantity - Active Allocated Quantity
+  = max(0, Confirmed Available Quantity - Allocated Quantity)
 
 Shortage Quantity
-  = max(0, Required Quantity - Confirmed Available Quantity)
+  = max(0, Required Quantity - (Confirmed Available Quantity - Verified Usable Return From Task))
 ```
 
-Số lượng đã mua nhưng chưa được xác nhận giao, donation chưa thực tế tiếp nhận hoặc vật tư không dùng được không được tính vào `Confirmed Available Quantity`.
+Số lượng đã mua nhưng chưa được xác nhận giao, donation chưa thực tế tiếp nhận hoặc vật tư không dùng được không được tính vào `Confirmed Available Quantity`. Đồ mượn được theo dõi riêng (borrowed item) và không vào sổ kho.
+
+Phần trả về từ task là vật tư work area đã nhận một lần: nó làm tăng `Unallocated Quantity` (dùng lại được) nhưng không được tính để đáp ứng requirement lần thứ hai, vì allocation đã cấp không bao giờ giảm. Ví dụ: cần 120, đã nhận 100, cấp 30 cho task, task trả về 10 → unallocated 80, shortage vẫn là 20 (R-24).
 
 ### 8.6. Thiếu vật tư đến hoàn tất mua sắm
 
@@ -529,13 +536,17 @@ Quy tắc:
 - Chỉ phân bổ từ số lượng đã xác nhận và còn chưa phân bổ.
 - Tổng allocation đang hoạt động không được vượt unallocated quantity.
 - Mỗi allocation phải gắn work area hoặc task.
+- Allocation chỉ gắn work area (không gắn task) được xem là đã tiêu thụ khi cấp và không có material report đi kèm; muốn thu hồi phần dư thì cấp theo task (R-26).
 - `allocated_quantity` là số lượng thực tế đã cấp và phải được giữ nguyên như dữ liệu lịch sử.
 - Việc hoàn trả vật tư sau task chỉ ảnh hưởng stock sau khi Material Officer xác minh material report.
 - Vật tư tiêu hao và vật tư tái sử dụng cần cách xử lý cuối mùa khác nhau.
 
 ### 8.10. Báo cáo vật tư sau khi hoàn thành task
 
-Điều kiện trước: task đã được Work Area Leader xác nhận `Completed` và task có material allocation.
+Điều kiện trước: task có material allocation và đã ở một trong hai trạng thái:
+
+- `Completed` (Work Area Leader đã xác nhận): volunteer phụ trách gửi report.
+- `Cancelled`: volunteer phụ trách **hoặc** Material Officer của work area gửi report để thu hồi vật tư; task bị hủy trước khi có người nhận thì Material Officer gửi. Khi task chuyển sang `Cancelled` mà còn vật tư đã cấp, hệ thống nhắc Material Officer thu hồi (R-25).
 
 Quy trình:
 
@@ -819,7 +830,7 @@ Chỉ report đã được Material Officer xác minh mới làm thay đổi off
 
 ### 10.6. Báo cáo vật tư sau task
 
-- **BR-44:** Work Area Leader phải xác nhận Task `Completed` trước khi volunteer gửi material report cuối task.
+- **BR-44:** Work Area Leader phải xác nhận Task `Completed` trước khi volunteer gửi material report cuối task. Task `Cancelled` còn vật tư đã cấp cũng được lập material report, do volunteer phụ trách hoặc Material Officer của work area gửi; việc verify vẫn theo BR-47 → BR-51.
 - **BR-45:** Material report chỉ được lập từ các `material_allocation_item` đã thực tế cấp cho task.
 - **BR-46:** Volunteer chỉ báo cáo trạng thái vật tư; volunteer không trực tiếp cập nhật official stock.
 - **BR-47:** Material Officer của đúng work area là người xác minh material report.
@@ -955,6 +966,7 @@ Hệ thống nên phát thông báo khi:
 - Có support request mới phù hợp với community, skill hoặc vật tư đang có; vật tư hỗ trợ được duyệt hoặc đã chuyển.
 - Mandatory readiness item failed.
 - Material report được volunteer gửi hoặc được Material Officer xác minh.
+- Task bị hủy khi còn vật tư đã cấp: nhắc Material Officer thu hồi.
 - Work area chuyển sang Ready.
 
 Thông báo không được chứa thông tin nhạy cảm hoặc URL file riêng tư có hiệu lực lâu dài.
@@ -1101,6 +1113,9 @@ Hệ thống đạt baseline nghiệp vụ khi chứng minh được các kịch
 | R-21 (24/10/2026) | Dữ liệu check-in | Chỉ bắt buộc timestamp máy chủ; không bắt buộc GPS, geofence hoặc ảnh. |
 | R-22 (24/10/2026) | Đồng bộ chuyển kho hỗ trợ | Khi Resource đã `TRANSFER_IN`, TaskExecution giữ pending sync, retry và đối soát tới khi khớp. |
 | R-23 (24/10/2026) | Xác nhận vật tư giá trị cao | Một Material Officer xác nhận; không yêu cầu hai người. |
+| R-24 (05/11/2026) | Shortage sau khi task trả vật tư | Phần verified remaining trả về làm tăng unallocated nhưng không giảm shortage. |
+| R-25 (05/11/2026) | Vật tư của task bị hủy | Thu hồi bằng material report của task `Cancelled` (volunteer phụ trách hoặc Material Officer), Officer verify; không tự trả toàn bộ về kho khi hủy. Hệ thống nhắc Officer khi task bị hủy còn vật tư. |
+| R-26 (05/11/2026) | Allocation cấp work area | Xem là đã tiêu thụ khi cấp, không có material report; cần thu hồi thì cấp theo task. |
 
 ### 19.2. Vấn đề còn cần stakeholder xác nhận
 
