@@ -1,7 +1,7 @@
 # GrottoWorks — Kế hoạch tích hợp Cloudflare R2 (ảnh tiến độ task + file thiết kế 3D)
 
 **Ngày lập:** 06/11/2026 · **Phạm vi:** `GrottoWorks_BE` (NotificationAudit, TaskExecution, ParishCoordination, docker), `GrottoWorks_FE` (`lib/files.ts`, `features/designs`, `features/builder`), tài liệu ERD/Contract
-**Trạng thái:** đề xuất, chờ chốt các quyết định ở §8
+**Trạng thái:** Phần A đã implement trên `GrottoWorks_BE@Vu-dev` (06/11/2026, chưa chạy thử với bucket R2 thật); B, C chờ chốt các quyết định ở §8
 
 ---
 
@@ -66,6 +66,8 @@ Nguyên tắc giữ nguyên: bucket **private**, không bật `r2.dev` public; m
 - Presign: `GetPreSignedURL` (Verb PUT, `ContentType` được ký ⇒ client phải gửi đúng header `Content-Type`), Verb GET kèm `ResponseHeaderOverrides.ContentDisposition` (tên file gốc) khi cần tải về.
 - `CopyObject`, `GetObject`, `DeleteObject`, `GetObjectMetadata` thay cho Stat — R2 đều hỗ trợ.
 - Chuyển luôn `SystemArtifactStorage`, `SystemObjectCleanupWorker` (`ListObjectsV2` theo prefix), `DatabaseBackupArtifactBuilder`, `tools/Verification/RecoveryObjects.cs` sang một factory `IS3ClientFactory` dùng chung.
+
+> **Đã làm (06/11/2026):** `S3FileObjectStorage`, `ObjectStorageOptions`/`ObjectStorageClients` (singleton), `ObjectStorageInitializer`; đã chuyển `SystemArtifactStorage`, `SystemObjectCleanupWorker`, `DatabaseBackupArtifactBuilder`, `tools/Verification/RecoveryObjects.cs`; hướng dẫn ở `GrottoWorks_BE/docs/ops/cloudflare-r2.md`. Khác so với đề xuất ban đầu: giữ tên key `InternalEndpoint` (không đổi thành `Endpoint`) để không phải sửa compose cũ; với R2, `PublicEndpoint` bị bỏ qua vì presigned URL của R2 chỉ hợp lệ trên endpoint S3. Chưa làm: readiness probe kiểm tra bucket, integration test bằng Testcontainers (môi trường hiện chưa có Docker; đã kiểm tra luồng end-to-end bằng một S3 server cục bộ).
 
 ### A2. Cấu hình
 ```jsonc
