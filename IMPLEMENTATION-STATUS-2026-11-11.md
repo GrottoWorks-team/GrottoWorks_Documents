@@ -59,6 +59,20 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | **Bỏ toàn bộ mock mobile** (seed users/areas/tasks/timesheets, `withFallback`, `mockLogin`, `logActivity`) | `GrottoWokrs_Mobile/src/api/index.ts`, xoá `src/mocks/` | Mobile README (đã sửa 11/11) |
 | Mobile gọi BE cho vật tư (`GET /materials`) | `real.ts: materialsReal()` | — |
 | Bỏ stub `useVolunteerRegs()` trả mảng rỗng | FE: xoá `features/volunteers/api.ts` | — |
+| **Mobile: thêm “Tuỳ chọn thông báo”** (in-app/push/email) | `features/volunteer/profile/NotificationSettingsScreen.tsx` + `GET/PUT /users/me/notification-preferences` | — |
+
+### 2.1. Kết quả rà soát "endpoint BE có mà client chưa dùng" (11/11)
+
+Quét 224 route public của `*Endpoints.cs` và đối chiếu toàn bộ `src/**/*.ts|tsx` của web + mobile:
+**chỉ còn 3 route không có client**, trong đó 2 route health là hạ tầng:
+
+| Route | Vì sao chưa dùng |
+|---|---|
+| `GET /health/live`, `GET /health/ready` | Hạ tầng, không cần UI |
+| `PATCH /notification-rules/{ruleId}` | Chỉ có PATCH, **không có GET danh sách** (A7) nên không dựng được màn sửa |
+
+⇒ Không còn tính năng nào "BE đã có endpoint mà FE/mobile chưa nối". Các phần còn thiếu đều do
+**BE chưa có endpoint** (§3.1, §3.2), không phải thiếu UI.
 
 ---
 
