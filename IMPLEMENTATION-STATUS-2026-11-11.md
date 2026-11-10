@@ -23,7 +23,7 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | 7 | Khu vực công tác (CRUD, gán leader/MO/cộng đoàn) | ✅ | ✅ | 🟡 (đọc) | Tạo + gán tách 2 request (A12) |
 | 8 | **Sơ đồ giáo xứ (ảnh + ghim khu vực)** | ❌ | 🟡 | ❌ | **Demo FE-only**: `features/map/localStore.ts` (localStorage + IndexedDB); chỉ ADMIN (FE `PARISH`) sửa, ban hành giáo xem. Cần `GET/PUT/DELETE /parishes/{id}/map` (BE-TODO §1) |
 | 9 | Nhiệm vụ: CRUD, kỹ năng, tiêu chí, phát hành | ✅ | ✅ | 🟡 (đọc + nhận/từ chối) | Chỉ task OPEN mới sửa (409 `TASK_INVALID_STATE`) |
-| 10 | Phân công TNV (mời/accept/decline) | ✅ | ✅ | ✅ | `GET /users/me/assignments` (A8 đã đóng 05/11) |
+| 10 | Phân công TNV (mời/accept/decline) + **trưởng nhóm nhiệm vụ** | ✅ | ✅ | ✅ | `GET /users/me/assignments`; trưởng nhóm: `PUT/DELETE /tasks/{id}/team-leader` (BE nhánh `phongnltse/task-team-leader-progress` — **chờ merge**); web chọn trong TaskDetail, mobile hiện badge + chặn nộp tiến độ nếu không phải trưởng nhóm |
 | 11 | Đơn đăng ký tham gia (application) | 🟡 | ✅ (duyệt) | 🟡 (nộp) | BE có POST + list theo task + approve/reject; **thiếu** list/huỷ cho TNV (A5) ⇒ mobile cache cục bộ `api/applicationsCache.ts` |
 | 12 | Tiến độ, gửi duyệt, nghiệm thu, yêu cầu sửa | ✅ | ✅ | ✅ | Mobile upload minh chứng qua presigned URL |
 | 13 | Chấm công: yêu cầu vào ca, duyệt, check-out, sửa giờ | ✅ | ✅ | ✅ | `attendance-requests`, `attendance/{id}/correction-requests` |
@@ -60,6 +60,7 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | Mobile gọi BE cho vật tư (`GET /materials`) | `real.ts: materialsReal()` | — |
 | Bỏ stub `useVolunteerRegs()` trả mảng rỗng | FE: xoá `features/volunteers/api.ts` | — |
 | **Mobile: thêm “Tuỳ chọn thông báo”** (in-app/push/email) | `features/volunteer/profile/NotificationSettingsScreen.tsx` + `GET/PUT /users/me/notification-preferences` | — |
+| **Chỉ trưởng nhóm gửi tiến độ / nộp hoàn thành** khi task đã chỉ định trưởng nhóm | BE: `TaskReviewService.AuthorizeVolunteerAsync` (mã 403 `TASK_TEAM_LEADER_ONLY`) + 2 unit test; Web: khối “Trưởng nhóm nhiệm vụ” ở `TaskDetailPage`; Mobile: badge + ẩn nút nộp tiến độ | `GrottoWorks_BE` nhánh `phongnltse/task-team-leader-progress` (chưa merge main) |
 
 ### 2.1. Kết quả rà soát "endpoint BE có mà client chưa dùng" (11/11)
 
