@@ -61,6 +61,8 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | Bỏ stub `useVolunteerRegs()` trả mảng rỗng | FE: xoá `features/volunteers/api.ts` | — |
 | **Mobile: thêm “Tuỳ chọn thông báo”** (in-app/push/email) | `features/volunteer/profile/NotificationSettingsScreen.tsx` + `GET/PUT /users/me/notification-preferences` | — |
 | **Chỉ trưởng nhóm gửi tiến độ / nộp hoàn thành** khi task đã chỉ định trưởng nhóm | BE: `TaskReviewService.AuthorizeVolunteerAsync` (mã 403 `TASK_TEAM_LEADER_ONLY`) + 2 unit test; Web: khối “Trưởng nhóm nhiệm vụ” ở `TaskDetailPage`; Mobile: badge + ẩn nút nộp tiến độ | `GrottoWorks_BE` nhánh `phongnltse/task-team-leader-progress` (chưa merge main) |
+| **Gộp IA của admin**: `/parish/areas` + `/parish/map` thành **hub “Giáo xứ & cộng đoàn”** (`/parish/communities`) với 3 tab *Giáo xứ / Cộng đoàn / Khu vực công tác*; bản đồ là **trang con** `/parish/communities/map?parish=<id>` | FE: `parish/pages/CommunitiesPage.tsx` (hub + `AreasPanel`), `nav-config.ts` (bỏ 2 mục menu), `App.tsx` (route con + redirect URL cũ), `features/map/pages/ParishMapPage.tsx` (breadcrumb + tiêu đề theo giáo xứ) | — |
+| **ADMIN xem nhiều giáo xứ**: `useParishScope()` + `ParishSwitcher` (ghi `?parish=`), `useCommunities({ parishId })`, `useParish(parishId)`, bản đồ + ghim **lưu theo từng giáo xứ** (`mapStore` v2, tự chuyển dữ liệu bản cũ) | FE: `features/parish/hooks.ts`, `features/parish/components/ParishSwitcher.tsx`, `features/map/api.ts` + `localStore.ts` (+ `localStore.test.ts` 5 test) | — |
 
 ### 2.1. Kết quả rà soát "endpoint BE có mà client chưa dùng" (11/11)
 
