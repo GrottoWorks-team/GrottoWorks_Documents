@@ -35,7 +35,7 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | 19 | Sẵn sàng / checklist trước mùa | ✅ | ✅ | — | `readiness-checks`, evidence, corrective task |
 | 20 | Báo cáo & xuất file | ✅ | ✅ | — | `/reports/*`, `report-exports` |
 | 21 | Vinh danh / điểm đóng góp | ✅ | ✅ | ✅ | `contribution-types`, `recognition-rules`, `users/me/recognition` |
-| 22 | Thông báo (in-app, đã đọc, tuỳ chọn) | ✅ | ✅ | ✅ | `/notifications`, `read-all`, preferences |
+| 22 | Thông báo (in-app, đã đọc, tuỳ chọn) **+ khay hệ điều hành trên mobile** | ✅ | ✅ | ✅ | `/notifications`, `read-all`, preferences. Mobile: `NotificationBridge` poll 60s → `expo-notifications` phát notification ra **khay điện thoại** + badge chưa đọc (chưa có push server ⇒ app phải còn chạy). Rule mới `attendance.session.closed-by-leader` (BE-CHANGELOG mục 6) |
 | 23 | Nhật ký hoạt động (audit) | ✅ | ✅ (ADMIN) | ❌ | `/activity-logs` **chỉ ADMIN** ⇒ mobile đã bỏ màn/hook hoạt động |
 | 24 | Sao lưu & job hệ thống | ✅ | ✅ | — | `/backups`, `/system-data-exports` |
 | 25 | Dashboard | ✅ | ✅ | — | Web tổng hợp từ dữ liệu thật |
