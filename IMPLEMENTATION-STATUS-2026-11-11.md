@@ -21,7 +21,7 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | 5 | Mùa: tạo/sửa, activate/complete/archive | 🟡 | 🟡 | 🟡 (đọc) | `complete` chỉ nhận READY, thiếu ACTIVE→READY (A3) ⇒ nút "Chốt mùa" bị khoá |
 | 6 | **Tạo mùa mới từ mùa cũ (clone)** | ❌ | ❌ | — | Không có `POST /seasons/{id}/clone`; đặc tả: FE spec map/clone §1 |
 | 7 | Khu vực công tác (CRUD, gán leader/MO/cộng đoàn) | ✅ | ✅ | 🟡 (đọc) | Tạo + gán tách 2 request (A12) |
-| 8 | **Sơ đồ giáo xứ (ảnh + ghim khu vực)** | ❌ | 🟡 | ❌ | **Demo FE-only**: `features/map/localStore.ts` (localStorage + IndexedDB); chỉ ADMIN (FE `PARISH`) sửa, ban hành giáo xem. Cần `GET/PUT/DELETE /parishes/{id}/map` (BE-TODO §1) |
+| 8 | **Sơ đồ giáo xứ (ảnh + ghim khu vực)** | ❌ | 🟡 | ❌ | **Demo FE-only**: `features/map/localStore.ts` (localStorage + IndexedDB). ADMIN (FE `PARISH`) **tải/thay ảnh**; ban hành giáo (FE `COMMUNITY`) **ghim vị trí** — ADMIN **không được ghim**. Cần `GET/PUT/DELETE /parishes/{id}/map` + `PUT /parishes/{id}/map/pins` (BE-TODO §1) |
 | 9 | Nhiệm vụ: CRUD, kỹ năng, tiêu chí, phát hành | ✅ | ✅ | 🟡 (đọc + nhận/từ chối) | Chỉ task OPEN mới sửa (409 `TASK_INVALID_STATE`) |
 | 10 | Phân công TNV (mời/accept/decline) + **trưởng nhóm nhiệm vụ** | ✅ | ✅ | ✅ | `GET /users/me/assignments`; trưởng nhóm: `PUT/DELETE /tasks/{id}/team-leader` (BE nhánh `phongnltse/task-team-leader-progress` — **chờ merge**); web chọn trong TaskDetail, mobile hiện badge + chặn nộp tiến độ nếu không phải trưởng nhóm |
 | 11 | Đơn đăng ký tham gia (application) | 🟡 | ✅ (duyệt) | 🟡 (nộp) | BE có POST + list theo task + approve/reject; **thiếu** list/huỷ cho TNV (A5) ⇒ mobile cache cục bộ `api/applicationsCache.ts` |
@@ -52,7 +52,7 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 
 | Thay đổi | Nơi thực hiện | Tài liệu tương ứng |
 |---|---|---|
-| Sơ đồ + khu vực do **ADMIN (FE `PARISH`)** quản lý, ban hành giáo chỉ xem | `ParishMapPage.tsx` (`canEdit`), `AreaListPage.tsx` (`canEdit`) | FE spec map §2.4 (đã sửa 11/11) |
+| Sơ đồ: **ADMIN (FE `PARISH`) tải/thay ảnh**, **ban hành giáo (FE `COMMUNITY`) ghim vị trí**; khu vực do ban hành giáo quản lý | `ParishMapPage.tsx` (`canUpload` / `canPin`), `AreaListPage.tsx` (`canEdit`) | FE spec map §2.4 (đã sửa 11/11, lần 3) |
 | **Tạo khu vực + ghim vị trí trong cùng form** (pin tuỳ chọn) | `AreaFormDialog.tsx` + `features/map/components/MapPinPicker.tsx` | FE spec map §2.5 (đã sửa 11/11) |
 | TNV xem **lớp 3D gắn với nhiệm vụ** ngay trong app (không mở trình duyệt) | `features/volunteer/TaskModelScreen.tsx` + `sceneHtml.ts` + `mockScene.ts` (scene mock) | `BE-TODO-demo-2026-11-10.md` §3 |
 | Bỏ trang chia sẻ công khai `/share/scene/:areaId` | FE: xoá `SceneSharePage`/`demoScene`, bỏ `WEB_BASE` ở mobile | — |
@@ -63,8 +63,9 @@ Ký hiệu: ✅ đủ (BE có API + UI nối thật) · 🟡 một phần / ch�
 | **Chỉ trưởng nhóm gửi tiến độ / nộp hoàn thành** khi task đã chỉ định trưởng nhóm | BE: `TaskReviewService.AuthorizeVolunteerAsync` (mã 403 `TASK_TEAM_LEADER_ONLY`) + 2 unit test; Web: khối “Trưởng nhóm nhiệm vụ” ở `TaskDetailPage`; Mobile: badge + ẩn nút nộp tiến độ | `GrottoWorks_BE` nhánh `phongnltse/task-team-leader-progress` (chưa merge main) |
 | **Gộp IA của admin**: `/parish/areas` + `/parish/map` thành **hub “Giáo xứ & cộng đoàn”** (`/parish/communities`) với 3 tab *Giáo xứ / Cộng đoàn / Khu vực công tác*; bản đồ là **trang con** `/parish/communities/map?parish=<id>` | FE: `parish/pages/CommunitiesPage.tsx` (hub + `AreasPanel`), `nav-config.ts` (bỏ 2 mục menu), `App.tsx` (route con + redirect URL cũ), `features/map/pages/ParishMapPage.tsx` (breadcrumb + tiêu đề theo giáo xứ) | — |
 | **ADMIN xem nhiều giáo xứ**: `useParishScope()` + `ParishSwitcher` (ghi `?parish=`), `useCommunities({ parishId })`, `useParish(parishId)`, bản đồ + ghim **lưu theo từng giáo xứ** (`mapStore` v2, tự chuyển dữ liệu bản cũ) | FE: `features/parish/hooks.ts`, `features/parish/components/ParishSwitcher.tsx`, `features/map/api.ts` + `localStore.ts` (+ `localStore.test.ts` 5 test) | — |
-| **Đảo quyền khu vực công tác (11/11, lần 2)**: ADMIN **chỉ xem** khu vực; tạo/sửa + phân công trưởng khu / trưởng nhóm vật tư thuộc **ban hành giáo** (`/community/areas`). Sơ đồ (ảnh + ghim) vẫn của ADMIN; form khu vực của ban hành giáo không còn khối ghim | FE: `AreaListPage.canEdit = role === 'COMMUNITY'`, hub `AreasPanel` chỉ đọc + dòng nhắc, `AreaFormDialog` ẩn khối ghim với non-admin | `BE-TODO-demo-2026-11-10.md` §0/§2 (đích: policy `POST/PATCH/PUT` khu vực → **PARISH**, bỏ `Admin`) |
+| **Đảo quyền khu vực công tác (11/11, lần 2)**: ADMIN **chỉ xem** khu vực; tạo/sửa + phân công trưởng khu / trưởng nhóm vật tư thuộc **ban hành giáo** (`/community/areas`). Ảnh sơ đồ vẫn của ADMIN; form khu vực của ban hành giáo không còn khối ghim | FE: `AreaListPage.canEdit = role === 'COMMUNITY'`, hub `AreasPanel` chỉ đọc + dòng nhắc, `AreaFormDialog` ẩn khối ghim với non-admin | `BE-TODO-demo-2026-11-10.md` §0/§2 (đích: policy `POST/PATCH/PUT` khu vực → **PARISH**, bỏ `Admin`) |
 | Sửa lỗi `GET /work-area-categories?status=ACTIVE` → 400 (binder enum BE phân biệt hoa/thường) → gửi `Active`/`Inactive`; form tạo khu vực của ban hành giáo nạp được danh mục | FE: `features/parish/api.ts` | — |
+| **Ghim vị trí: ADMIN chỉ xem (11/11, lần 3)**: tách quyền trên bản đồ — `canUpload = role === 'PARISH'` (ảnh), `canPin = role === 'COMMUNITY'` (ghim); nút “Đặt vị trí / Xoá vị trí” + chế độ bấm-lên-ảnh chỉ bật với ban hành giáo; ADMIN thấy banner “chỉ xem”; khối ghim trong form khu vực chuyển sang `COMMUNITY` | FE: `features/map/pages/ParishMapPage.tsx`, `features/areas/pages/AreaFormDialog.tsx`, `locales/vi.json` + `en.json` (`readOnlyHint` viết lại, thêm `uploadedByAdmin`) | `BE-TODO-demo-2026-11-10.md` §0/§1.3 (tách `PUT /map` = ADMIN, `PUT /map/pins` = PARISH); FE spec map §2.4 |
 
 ### 2.1. Kết quả rà soát "endpoint BE có mà client chưa dùng" (11/11)
 
@@ -84,8 +85,8 @@ Quét 224 route public của `*Endpoints.cs` và đối chiếu toàn bộ `src/
 ## 3. Việc còn mở (theo mức ưu tiên)
 
 ### 3.1. BE phải làm để 3 tính năng mới chạy thật
-1. `parish.map_*` (migration) + `GET/PUT/DELETE /parishes/{id}/map`, policy **ADMIN-only** cho ghi.
-2. Đổi policy `POST/PATCH/PUT /work-areas*` về **ADMIN** (hiện còn cho BE `PARISH`).
+1. `parish.map_*` (migration) + `GET/PUT/DELETE /parishes/{id}/map` (**ảnh**: ghi = ADMIN) + `PUT /parishes/{id}/map/pins` (**ghim**: ghi = PARISH).
+2. Policy khu vực: bỏ `Admin` khỏi `POST/PATCH/PUT /work-areas*` (chỉ PARISH/LEADER theo endpoint).
 3. `work_area_scene` + `scene_version` + `GET/PUT /work-areas/{id}/design-scene`; quyền đọc cho VOLUNTEER đã nhận việc (lọc theo `taskIds`).
 4. Tuỳ chọn: gộp `mapPin` vào `POST /seasons/{id}/work-areas` (1 transaction).
 Chi tiết + ước lượng: `GrottoWorks_BE/docs/BE-TODO-demo-2026-11-10.md`.
@@ -107,10 +108,10 @@ Chi tiết + ước lượng: `GrottoWorks_BE/docs/BE-TODO-demo-2026-11-10.md`.
 | `DOCS-INDEX.md` | Danh mục tài liệu | ✅ đã cập nhật 11/11 | Trỏ tới file này |
 | `API-GAP-STATUS-2026-11-04.md` | Gap API chi tiết | 🟡 §1 sai số liệu mobile (đã sửa 11/11), §3 vẫn đúng | Giữ làm tham chiếu gap |
 | `api-contracts.md` | Đối chiếu FE ↔ BE | 🟡 còn liệt kê vài path legacy nhưng nội dung vẫn đúng hướng | Rà lại khi BE xong map/design |
-| `GrottoWorks_FE/docs/specs/2026-11-03-clone-season-and-parish-map.md` | Đặc tả clone + sơ đồ | 🟡 §2.4/§2.5 lỗi thời (quyền + luồng ghim) | **Đã sửa 11/11**; phần clone vẫn là đề xuất (BE chưa làm) |
+| `GrottoWorks_FE/docs/specs/2026-11-03-clone-season-and-parish-map.md` | Đặc tả clone + sơ đồ | 🟡 §2.4/§2.5 lỗi thời (quyền + luồng ghim) | **Đã sửa 11/11 (3 lần)**: ảnh = ADMIN, ghim = ban hành giáo; phần clone vẫn là đề xuất (BE chưa làm) |
 | `GrottoWorks_FE/docs/specs/2026-10-27-3d-layer-builder.md` | Đặc tả builder + API scene | ✅ (ghi rõ giai đoạn A xong, B/C chờ BE) | Bổ sung màn TNV xem lớp khi BE có API |
 | `GrottoWorks_FE/docs/specs/2026-10-27-design-review-2d-3d.md` | Đặc tả review 2D/3D | 🟡 vẫn là FE-local | Giữ tới khi có `design-*` API |
-| `GrottoWorks_FE/docs/UI-TEST-SCENARIO.md` | Kịch bản test UI | 🟡 dòng bản đồ ghi "COMMUNITY + PARISH sửa" | **Đã sửa 11/11**: chỉ ADMIN sửa |
+| `GrottoWorks_FE/docs/UI-TEST-SCENARIO.md` | Kịch bản test UI | 🟡 dòng bản đồ ghi "COMMUNITY + PARISH sửa" | **Đã sửa 11/11**: ảnh = ADMIN, ghim = ban hành giáo |
 | `GrottoWokrs_Mobile/README.md` | Hướng dẫn app TNV | ⛔ mô tả app chạy offline + thư mục `mocks/` | **Đã sửa 11/11**: chỉ gọi BE; thêm màn mô hình 3D |
 | `GrottoWorks_BE/docs/BE-TODO-demo-2026-11-10.md` | Việc BE cho 3 tính năng | ✅ | Cập nhật khi BE bắt đầu làm |
 | `GrottoWorks_Documents/*` (Ra_Soat_SRS_SDD, Phuong_An, Review_Vu, UI-E2E-Test-Report) | Ghi chép point-in-time | 🗄️ lịch sử | Không sửa; đọc theo `DOCS-INDEX` |
