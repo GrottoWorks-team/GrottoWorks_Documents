@@ -388,3 +388,110 @@ Cần: tạo tồn khả dụng cho khu (nhập opening stock hoặc xác nhận
 **Ghi chú:** FIX-04 là bug thật phát sinh khi thêm cột (stale closure), đã sửa cùng lúc — nếu chỉ thêm cột mà không thêm `areas` vào deps thì cột luôn rỗng.
 
 **Chốt kênh (11/11/2026):** theo §4.6, **app mobile chỉ dành cho tài khoản VOLUNTEER** (chặn ngay lúc đăng nhập: `AuthContext.tsx:52` `NOT_VOLUNTEER`, phiên không phải TNV bị xoá), còn web giữ đúng 4 role quản trị (`COMMUNITY` = BE `PARISH`, `LEADER`, `MATERIAL_OFFICER`, `PARISH` = BE `ADMIN`). Vì vậy FIX-03 được **chuyển hoàn toàn sang mobile**, web không còn shell thứ 5.
+
+---
+
+# ĐỢT 4 — chạy tiếp các luồng còn treo + tính năng mới 12/11 (12/11/2026, tối)
+
+Môi trường: `docker compose up -d` (8 service + postgres/rabbitmq/redis/minio), FE dev `http://localhost:5175`,
+Gateway `http://localhost:6102`, seed `GrottoWorks Demo Season 2026` / `Mùa Giáng sinh 2026` (ACTIVE) / `2025` (COMPLETED).
+Tài khoản: `hoa.nguyen` (ADMIN), `bao.tran` (PARISH — ban hành giáo), `ngan.nguyen` (LEADER),
+`mai.le` + `anh.pham` (MO), `tram.do` (VOLUNTEER).
+
+## 22. Mùa Giáng sinh — tạo mới, clone, khoá sửa (SEASON-03/04/05/06)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| SEASON-03 | §8.1 tạo mùa mới (PLANNING) | ✅ PASS | PARISH `POST /seasons` (2036) → **201**, `status = PLANNING` |
+| SEASON-03b | §11 chỉ ban hành giáo được tạo mùa | ✅ PASS (chặn đúng) | ADMIN `hoa.nguyen` `POST /seasons` → **403** `FORBIDDEN`; `GET /seasons` vẫn **200** (chỉ đọc) |
+| SEASON-04 | "Tạo mùa mới từ mùa cũ" `POST /seasons/{id}/clone` | ✅ PASS | PARISH clone mùa 2026 → 2037, `dateShift = SAME_DAY_OF_SEASON`, `copyAssignments = true` → **201**, **8 khu vực**, `warnings = []`, ngày giữ đúng offset (mùa mở 01/10 → khu *Hang đá trung tâm* 15/10 → `2037-10-15`), leader/officer copy đủ |
+| SEASON-04b | Clone trùng `seasonYear` | ✅ PASS (chặn đúng) | Clone lại năm 2037 → **409 `SEASON_YEAR_CONFLICT`** |
+| SEASON-04c | **UI** `/community/seasons` → "Tạo mùa mới từ mùa cũ" | ✅ PASS | Dialog: chọn mùa nguồn (8 khu tick sẵn), sửa tên/năm/ngày → toast **"Đã tạo mùa 2039 với 8 khu vực"**, bảng có dòng mới `Clone UI 2039` (4 cộng đoàn), `SeasonSelect` ở header cập nhật ngay |
+| SEASON-05 | Chỉ mùa `PLANNING` mới sửa được | ✅ PASS (chặn đúng) | `PATCH /seasons/{ACTIVE}` → **409 `SEASON_INVALID_STATE`**; `PATCH /seasons/2036` (PLANNING) → **200** |
+| SEASON-05b | **UI** — mùa đã kích hoạt/chốt không còn nút Sửa | ✅ PASS | Bảng mùa: 2026 (ACTIVE) chỉ còn "Chốt mùa", 2025 (COMPLETED) chỉ còn "Lưu trữ"; **click dòng không mở dialog**; mùa PLANNING vẫn có "Kích hoạt / Sửa". Mở dialog với mùa không PLANNING → chế độ chỉ-đọc (tiêu đề "Chi tiết mùa", chỉ nút Đóng) |
+
+## 23. Khu vực trong mùa PLANNING (AREA-02)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| AREA-02 | §7.1 tạo khu vực trong mùa **PLANNING** | ✅ PASS | `POST /seasons/{2037-clone}/work-areas` → **201**, `status = PLANNED` |
+| AREA-01b | Tạo khu vực trong mùa ACTIVE | ✅ PASS (chặn đúng) | `POST /seasons/{2026-ACTIVE}/work-areas` → **409 `SEASON_INVALID_STATE`** |
+| AREA-02b | **UI** `/community/areas` với mùa 2039 | ✅ PASS | Chọn mùa 2039 ở header → "Tạo khu vực" (mùa điền sẵn) → **bắt buộc chọn trưởng khu + trưởng nhóm vật tư** → toast "Đã tạo khu vực Khu UI 2039", card hiện "Đang chuẩn bị" |
+
+## 24. BR-71 — chốt tuyển (TASK-03)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| TASK-03 | BR-71 `OPEN → NOT_STARTED` chỉ qua "chốt tuyển" | ✅ PASS | LEADER `POST /work-areas/{id}/tasks` → **201 OPEN**; `POST /tasks/{id}/ready` → **200 `NOT_STARTED`** (v2) |
+| TASK-03b | Không chốt tuyển 2 lần | ✅ PASS (chặn đúng) | Gọi lại `ready` → **409 `TASK_INVALID_STATE`** |
+| TASK-03c | Phân quyền chốt tuyển | ✅ PASS (chặn đúng) | VOLUNTEER → **403**; LEADER → **200** |
+| TASK-03d | **UI** `/leader/tasks/{id}` | ✅ PASS | Nút **"Phát hành việc"** (kèm ghi chú "Việc còn mở tuyển — hãy phát hành việc để chốt danh sách TNV") → toast *Đã phát hành…*, badge **"Đã chốt tuyển"**, các nút Sửa kỹ năng/vật tư bị khoá với lý do "Chỉ sửa được khi việc còn OPEN" |
+
+## 25. §8.8 Đồ mượn (BOR-01…09)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| BOR-01 | Danh sách đồ mượn + quá hạn | ✅ PASS | `GET /borrowed-items` → 2 bản ghi seed (`ACCEPTED` 6 giàn giáo, `ISSUED` 1 máy phát 5kVA); `GET /borrowed-items/overdue` → 0 |
+| BOR-02 | Chỉ VOLUNTEER tạo lời đề nghị mượn | ✅ PASS (chặn đúng) | VOLUNTEER `POST /loan-offers` → **201 `OFFERED`**; MO gọi cùng endpoint → **403** |
+| BOR-03 | MO **đúng khu** duyệt lời mượn | ✅ PASS | `POST /loan-offers/{id}/accept` (MO `anh.pham`, khu *Hang đá trung tâm*) → **201 `ACCEPTED`**; MO khác khu (`mai.le`) → **403 `WORK_AREA_SCOPE_DENIED`** |
+| BOR-04 | Bàn giao đồ (issue) | ✅ PASS | `POST /borrowed-items/{id}/issue` (borrowDate 12/11) → **200 `ISSUED`** |
+| BOR-05 | Trả đồ + tình trạng | ✅ PASS (sau khi sửa payload) | `returnDate` phải **trong khoảng [borrowDate, hôm nay]** — gửi 16/12/2026 (tương lai) → **422 `LOAN_RETURN_DATE_INVALID`**; đổi về 12/11/2026 + `condition = DAMAGED` → **200 `RETURNED`** |
+| BOR-06 | Không trả 2 lần | ✅ PASS (chặn đúng) | Gọi lại `return` → **409 `BORROWED_ITEM_INVALID_STATE`** |
+| BOR-07 | Chặn thao tác chéo khu | ✅ PASS (chặn đúng) | MO khác khu issue → **403 `WORK_AREA_SCOPE_DENIED`**; báo sự cố trên đồ của khu khác cũng **403** (đúng scope) |
+| BOR-08 | **UI** `/material-officer/borrowed` | ✅ PASS | 3 mục: "Chào cho mượn chờ duyệt" (1 offer còn `OFFERED` + nút Nhận/Từ chối), "Đồ mượn của giáo xứ" (Đã nhận / **Đã trả** / Đã bàn giao + nút Đã trả–Sự cố), "Đồ mượn quá hạn trả: Không có món nào quá hạn" |
+
+**Hợp đồng cần nhớ:** `POST /api/v1/loan-offers` = **VOLUNTEER**; accept/reject/issue/assignment/return/incidents = **MO (đúng khu)**;
+`date`/`returnDate`/`borrowDate` là **date-only**; `returnDate` không được ở tương lai.
+
+## 26. §12 Báo cáo & export (RPT-01…05)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| RPT-01 | `GET /api/v1/reports/{type}?seasonId=…` | ✅ PASS | Cả 6 loại → **200**: tasks **16 dòng**, materials **2**, purchases **2**, contributions **1**, attendance **0**, readiness **9** |
+| RPT-02 | Thiếu `seasonId` | ✅ PASS (chặn đúng) | **400 `MISSING_FILTER_VALUE`** |
+| RPT-03 | Phân quyền theo loại báo cáo | ✅ PASS (chặn đúng) | LEADER `/reports/contributions` → **403**; MO `/reports/tasks` → **403**; MO `/reports/materials` → **200** |
+| RPT-04 | Export bất đồng bộ | ✅ PASS | `POST /report-exports` (TASKS/CSV) → **202 `QUEUED`** → `GET` → **`SUCCEEDED`** → `GET …/file` → **200**, `text/csv`, **1.711 bytes** |
+| RPT-05 | Chỉ PARISH được export | ✅ PASS (chặn đúng) | MO `POST /report-exports` → **403** |
+| RPT-06 | **UI** `/community/reports` | ✅ PASS | Chọn mùa 2026 → **16 dòng** (khu vực/task/loại/trạng thái/số người nhận/hạn/trễ hạn); nút **"Xuất Excel (máy chủ)"** → job `XLSX` `SUCCEEDED`, **8.011 bytes** (`report_export_job`) |
+
+**Quan sát:** lần gọi đầu tiên trong phiên, cả 6 báo cáo trả **404 `SEASON_NOT_FOUND`** dù season có trong
+`reporting_db.season_scope`; gọi lại (cùng token, cùng query) → **200**. Nghi do cold-start/cache projection
+sau khi container vừa restart (`docker ps` hiển thị "Up 9 minutes"). **Cần theo dõi**: nếu lặp lại trên môi trường
+sạch thì là bug thật (FE sẽ hiện "không tìm thấy mùa" sai).
+
+## 27. SUP-04d — duyệt thành viên hỗ trợ (đã gỡ điểm nghẽn BR-77)
+
+| Mã | Nghiệp vụ | Kết quả | Bằng chứng |
+|---|---|---|---|
+| SUP-04d | §8.11 phản hồi → duyệt member | ✅ PASS | Tạo request `Staffing` với position gắn **task không có skill** → `201 PLANNING`; `POST …/publish` (If-Match v1) → **200 `PUBLISHED`** (v2) |
+| SUP-04d2 | TNV gửi phản hồi | ✅ PASS | VOLUNTEER `POST /support-requests/{id}/responses` (members 1, materials []) → **201**, member `PENDING` |
+| SUP-04d3 | LEADER duyệt member (BR-77 đủ skill) | ✅ PASS | `POST /support-response-members/{id}/approve` → **200 `APPROVED`**; request → **`FULFILLED`** |
+| SUP-04d4 | TNV không tự duyệt | ✅ PASS (chặn đúng) | VOLUNTEER approve → **403** |
+
+**Kết luận §8.11:** toàn bộ chuỗi *tạo → publish → TNV phản hồi → LEADER duyệt member → FULFILLED* đã chạy được.
+Cách gỡ điểm nghẽn §18 (SUP-04d "không thể"): chọn **task chưa gán skill** cho position (seed cũ gắn task có skill
+mà không TNV nào khớp) — ghi vào tài liệu để lần test sau không mất thời gian.
+
+## 28. Tính năng mới 12/11 (kiểm chứng kèm trong đợt này)
+
+| Mã | Nội dung | Kết quả | Bằng chứng |
+|---|---|---|---|
+| NEW-01 | Quyền mùa: **chỉ PARISH ghi**, ADMIN chỉ đọc | ✅ PASS | ADMIN `POST /seasons` + `POST …/clone` → **403**; `GET /seasons` → **200**; PARISH cả hai → **201** |
+| NEW-02 | ADMIN xem mùa trong hub "Giáo xứ & cộng đoàn" | ✅ PASS | Menu ADMIN không còn mục "Mùa Giáng sinh"; `/parish/seasons` → chuyển sang `/parish/communities?tab=seasons`; tab hiện bảng mùa **không có nút Tạo/Sửa** + dòng nhắc "Chỉ ban hành giáo được tạo và điều hành mùa" |
+| NEW-03 | Chi tiết vật tư (thông số/nhà cung cấp/đơn giá tham khảo/tồn tối thiểu) | ✅ PASS | Tạo từ UI `/material-officer/materials` → bảng hiện `450.000 ₫`, `Tồn tối thiểu: 10`, `Công ty Hoa Sen`; `PATCH` cập nhật từng phần; giá âm → **422** |
+| NEW-04 | `.env` cho FE + Mobile | ✅ PASS | FE: Vite nạp `.env` (đổi cổng/proxy không cần sửa code), panel tài khoản demo ẩn khi `VITE_DEMO_PASSWORD` trống. Mobile: `expo lint` log `env: load .env → export EXPO_PUBLIC_*` |
+
+## 29. Dọn dữ liệu test của đợt 4
+
+Đã xoá: 3 mùa test (2036 tạo tay, 2037 clone API, 2039 clone UI) + 18 khu vực của chúng và outbox tương ứng;
+3 task BR-71; 1 support request + positions/responses; 2 bản ghi đồ mượn `May phat dien 5kW` (+ borrow_transaction);
+3 export job. Trạng thái DB trở về seed: **3 mùa** (2025/2026/2026-demo), 2 đồ mượn seed, 0 export job.
+
+## 30. Còn lại (chưa chạy được trong đợt 4)
+
+| Luồng | Lý do | Cách chạy |
+|---|---|---|
+| NOTI-02 §14 thông báo ra khay điện thoại | Cần thiết bị/emulator + dev build (Gradle đang vướng MAX_PATH trên Windows) | `npx expo run:android` trên máy có LongPaths, hoặc EAS build |
+| SUP-04e (nhắc lại) | Đã PASS ở §19 (đợt 3i), không lặp lại trong đợt 4 | — |
+| Kiểm thử tải/đa giáo xứ (BR-67 chéo giáo xứ) | Chỉ có 1 giáo xứ trong seed | Seed thêm giáo xứ thứ 2 rồi probe `GET /reports/*`, `POST /seasons` |
+
