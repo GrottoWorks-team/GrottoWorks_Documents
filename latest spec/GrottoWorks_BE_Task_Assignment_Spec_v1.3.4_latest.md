@@ -1,0 +1,467 @@
+# GrottoWorks Backend — Spec phân chia task theo function
+
+**Phiên bản:** 1.3.4 · **Ngày:** 30/10/2026 · *v1.3.2: bỏ trạng thái DRAFT khỏi baseline, Task tạo trực tiếp ở OPEN, đồng bộ Task schema, chốt ownership Support giữa TaskExecution/Resource và bổ sung các quyết định nghiệp vụ Q02/Q08/Q12–Q17/Q29/Q30. v1.3.1 (23/10/2026): đồng bộ tài liệu với ParishCoordination và TaskExecution đã triển khai; làm rõ projection tạm thời, role ADMIN, Work Area community/category, schema Task và ranh giới service.*
+**Team BE:** Nguyễn Tiến Lâm (Leader) · Nguyễn Trí Vũ
+**Thời gian dự án:** 09/2026 → 03/2027
+
+**Tài liệu nguồn**
+
+| Tài liệu | Vai trò trong spec này |
+|---|---|
+| `GrottoWorks_Phan_Tich_Nghiep_Vu_Chi_Tiet_v1.2.4_TaskCount.md` (BA v1.2.4) | Nguồn chuẩn cho nghiệp vụ, state machine, business rule (BR-01 → BR-81) |
+| `ERD_Grottowork_v3.6.txt` (ERD v3.6.2) | Nguồn chuẩn cho logical data model |
+| `GrottoWorks_API_Contract_v1.3.4_TaskCount.docx` (API v1.3.4) | Nguồn chuẩn cho endpoint, operationId, schema, error format |
+| `FA26SE067_..._thinhdp2.docx` | Phạm vi đăng ký đồ án |
+| Repo `GrottoWorks_BE` | Nguồn xác nhận hiện trạng triển khai. Đã có `Identity`, `ParishCoordination`, `Resource`, `TaskExecution`, API Gateway và các BuildingBlocks dùng chung. |
+
+> **Ba tài liệu trên được đồng bộ theo quyết định nhóm và hiện trạng code (Mục 9).** Quy tắc khi lệch:
+> 1. **Endpoint, path, operationId, role, tên event:** theo API Contract. Spec và `plan.md` không tự đặt path/tên riêng.
+> 2. **API và bảng đã implement:** code, migration và test là bằng chứng hiện trạng. Khi thay đổi hành vi đã được duyệt, cập nhật code và tài liệu trong cùng PR.
+> 3. Nghiệp vụ còn lại: quyết định nhóm > BA > ERD > API Contract, và cập nhật lại tài liệu trong cùng PR.
+
+---
+
+## 1. Tóm tắt phân công
+
+| Owner | Service / Module | Phạm vi function |
+|---|---|---|
+| **Lâm** | Platform | API Gateway (YARP), BuildingBlocks, docker-compose, RabbitMQ/MassTransit, Outbox/Inbox, JWT validation chung |
+| **Lâm** | `ParishCoordination` | Parish, Community, Season, Work Area, Work Area Category, gán Leader/Officer |
+| **Lâm** | `TaskExecution` | Task, Skill yêu cầu, Assignment/Application, Progress & Evidence, Review, Attendance & Correction, Support Request (nhân lực + vật tư, D-03) |
+| **Lâm** | `NotificationAudit` | Notification, Activity Log, File upload/download |
+| **Vũ** | `Identity` | Đăng ký/đăng nhập/JWT/refresh, password reset, User/Role, Volunteer Profile, Skill catalog |
+| **Vũ** | `Resource` | Material catalog, Requirement, Inventory ledger, Shortage, Allocation, Task Material Report, Purchase, Donor/Donation, Borrowed Item |
+| **Vũ** | `Readiness` | Checklist, Item result, Corrective task, Recheck, Confirm/Reopen |
+| **Vũ** | `Reporting` | Contribution, Recognition rule/point, Dashboard, Report, Export |
+
+**Lý do chia như vậy**
+
+- Chia theo **bounded context**, mỗi người sở hữu trọn service (code + DB + migration + test), tránh 2 người cùng sửa một service.
+- Lâm đã làm `ParishCoordination` và là leader → giữ luôn phần nền tảng (gateway, messaging) và chuỗi nghiệp vụ **Season → Work Area → Task → Assignment → Attendance → Progress** (chuỗi 1, 2, 5 trong BA mục 20).
+- Vũ sở hữu chuỗi **Requirement → Purchase/Donation/Borrow → Confirm → Allocation → Material Report** (chuỗi 3, 4), **Readiness** (chuỗi 6) và **Reporting** — các module chủ yếu tiêu thụ event.
+- Ước lượng khối lượng: Lâm ≈ 95 endpoint + hạ tầng; Vũ ≈ 100 endpoint, logic tồn kho nặng hơn. Hai bên tương đương.
+
+---
+
+## 2. Kiến trúc mục tiêu
+
+```text
+Web (Committee/Leader/MO/Admin)    Mobile (Volunteer)
+                 │  HTTPS /api/v1
+                 ▼
+        ┌──────────────────┐
+        │  ApiGateway (YARP)│  JWT validate, rate limit, X-Correlation-Id
+        └────────┬─────────┘
+   ┌──────┬──────┼────────┬──────────┬──────────┬───────────┐
+   ▼      ▼      ▼        ▼          ▼          ▼           ▼
+Identity Parish  Task   Resource  Readiness  Reporting  NotificationAudit
+ (Vũ)   (Lâm)  (Lâm)    (Vũ)       (Vũ)       (Vũ)        (Lâm)
+   │      │      │        │          │          │           │
+ idDb  parishDb taskDb resourceDb readyDb  reportDb    notifyDb   ← PostgreSQL, 1 DB/service
+   └──────┴──────┴────────┴────┬─────┴──────────┴───────────┘
+                               ▼
+                    RabbitMQ (integration events)
+                    Redis (cache, rate limit, refresh-token denylist)
+                    MinIO (file object storage)
+```
+
+### 2.1 Quy ước bắt buộc (cả 2 người)
+
+| Hạng mục | Quy ước |
+|---|---|
+| Cấu trúc service | `Services/<Name>/<Name>.Api / .Application / .Domain / .Infrastructure / .Contracts` + `tests/` — theo mẫu `ParishCoordination` hiện tại |
+| API | Minimal API endpoint group, base path `/api/v1`, `WithName(operationId)` khớp API Contract, `WithTags(<Tag>)` |
+| Response | Envelope `{ data, meta }` / `{ data, page, meta }` theo API Contract 4.2 |
+| Lỗi | `application/problem+json` + `code` ổn định + `correlationId` (vd. `TASK_INVALID_STATE`), 422 cho validation, 409 cho vi phạm business rule |
+| Enum JSON | `SNAKE_CASE_UPPER` (đã cấu hình trong Program.cs của Parish) |
+| Thời gian | `timestamptz`, UTC, timestamp do server sinh cho mọi thay đổi trạng thái |
+| ID | UUID; **không FK chéo service**, chỉ lưu ID tham chiếu |
+| Concurrency | Cột `version` (xmin hoặc int) trên aggregate có thể sửa; `If-Match` sai → 412 |
+| Idempotency | `Idempotency-Key` bắt buộc cho (API Contract 4.1): `recordPurchase`, `recordDirectDonation`, `recordDonationReceipt`, `requestCheckIn`, `recordCheckOut`, `createReportExport`, `createSystemDataExport`, `startBackup`; nội bộ: `POST /internal/tasks`, `POST /internal/support-transfers` |
+| Xóa | Không xóa cứng record đã có giao dịch → cancel / deactivate / archive |
+| Event | Envelope theo API Contract mục 8 (`eventId, eventType, occurredAt, correlationId, actorId, parishId, seasonId, aggregateType, aggregateId, aggregateVersion, payload`); publish qua Outbox; consumer idempotent theo `eventId` |
+| Authorization | Role check từ JWT **+** scope check (parish / work area / self) trong Application layer |
+| Branch | `main` ← PR bắt buộc review chéo; branch `feat/<service>/<function-id>` (vd. `feat/resource/F-RES-05`) |
+| Commit | `<type>(<service>): <mô tả>` — vd. `feat(Resource): confirm purchase delivery` |
+| DoD mỗi function | Endpoint chạy qua gateway · validation + ProblemDetails · scope check · unit test cho domain rule · integration test happy path + 1 lỗi chính · OpenAPI hiển thị đúng · event (nếu có) publish qua outbox |
+
+### 2.1a Tag API Contract → service
+
+| Tag (API Contract) | Service triển khai |
+|---|---|
+| User | Identity |
+| Parish | ParishCoordination |
+| Tasks, Attendance, Support Request/Response và trạng thái Support | TaskExecution |
+| Materials, Purchases, Contributions, kiểm tra tồn kho và Support stock transfer | Resource |
+| Readiness | Readiness |
+| Reports | Reporting |
+| NotificationAudit | NotificationAudit |
+
+**Ownership Support đã chốt:**
+
+| Nghiệp vụ | Service chịu trách nhiệm |
+|---|---|
+| Tạo/cập nhật Support Request | TaskExecution |
+| Volunteer/Community phản hồi hỗ trợ | TaskExecution |
+| Leader duyệt hoặc từ chối hỗ trợ | TaskExecution |
+| Kiểm tra tồn kho khả dụng | Resource |
+| Xuất vật tư từ Work Area nguồn (`TRANSFER_OUT`) | Resource |
+| MO xác nhận đã nhận vật tư | Resource |
+| Nhập vật tư vào Work Area đích (`TRANSFER_IN`) | Resource |
+| Cập nhật trạng thái Support Request/Response | TaskExecution |
+
+`confirmSupportMaterialReceipt` (tag Support) do **Resource** host vì xác nhận nhận và ghi ledger `TRANSFER_IN`. Gateway giữ đúng path Contract (không thêm prefix service); prefix dùng chung giữa nhiều service (`/users`, `/seasons`, `/work-areas`, `/tasks`, `/purchase-requests`) khai báo route cụ thể trước route chung.
+
+### 2.2 Xác thực và phân quyền
+
+- Identity (Vũ) phát hành JWT: `sub` (userId), `role` (đúng **1 role**/tài khoản theo ERD), `parishId`, `communityId` (nếu có).
+- Role code: `ADMIN`, `PARISH` (Committee), `LEADER`, `MO`, `VOLUNTEER`.
+- Scope work area **không nằm trong token**. Task/Resource/Readiness giữ **bảng projection** `work_area_scope(work_area_id, season_id, parish_id, leader_user_id, material_officer_user_id, status)` cập nhật từ event `planning.work-area.*` của Parish.
+- Gateway và từng service đều validate JWT (dùng chung package `BuildingBlocks.Security` do Lâm viết).
+
+---
+
+## 3. Danh sách service và data ownership
+
+| Service | Owner | Bảng ERD v3.6 sở hữu | Bảng bổ sung (cần chốt, xem Mục 9) |
+|---|---|---|---|
+| Identity | Vũ | `app_user` (+ `parish_id`), `role`, `volunteer_profile`, `volunteer_availability`, `skill`, `volunteer_skill` | `refresh_token`, `password_reset_token` (kỹ thuật) |
+| ParishCoordination | Lâm | `parish`, `community`, `christmas_season` (+ `estimated_budget`), `work_area_category`, `work_area` | — |
+| TaskExecution | Lâm | `task` (+ `task_type`, `purchase_request_id`, `completion_criteria`), `task_skill`, `task_material`, `task_assignment`, `task_progress`, `progress_evidence`, `attendance_request`, `attendance`, `attendance_correction`, `support_request`, `support_request_position`, `support_position_skill`, `support_request_material`, `support_response`, `support_response_member`, `support_response_material`; hiện `task` và `task_skill` đã triển khai, các bảng còn lại là thiết kế mục tiêu | `season_scope`, `work_area_scope` (projection hiện đã có; tạm nhận snapshot qua internal API, consumer event làm sau), `user_status_projection` (projection mục tiêu từ event Identity) |
+| Resource | Vũ | `material_category`, `material`, `material_requirement`, `material_transaction`, `material_allocation`, `material_allocation_item`, `task_material_report`, `task_material_report_item`, `purchase_request`, `purchase_request_item` (+ `shortage_override_reason`), `purchase`, `purchase_item`, `donor`, `donation`, `donation_item`, `donation_receipt`, `donation_receipt_item`, `borrowed_item`, `borrow_transaction` | `work_area_scope` (projection), `purchase_request_state_change` (kỹ thuật, nguồn `getPurchaseRequestHistory`) |
+| Readiness | Vũ | `readiness_checklist`, `readiness_item` (+ `corrective_task_id`) | — |
+| Reporting | Vũ | `contribution_type`, `contribution`, `recognition_rule` (có version), `recognition_point` (+ `contribution_id`) | `report_export_job`, read-model tổng hợp |
+| NotificationAudit | Lâm | `notification`, `notification_preference`, `activity_log`, `file_object` | `outbox/inbox` (mỗi service tự có) |
+
+> `task_material` thuộc TaskExecution (Leader khai báo khi tạo task). Resource nhận bản sao qua event `task.materials.changed` để tính nhu cầu và kiểm tra allocation.
+
+> `version` trên aggregate là chi tiết persistence phục vụ optimistic concurrency của từng service, không phải thuộc tính nghiệp vụ trong logical ERD.
+
+> Không tạo foreign key xuyên database service. Các cột như `parish_id`, `community_id`, `work_area_id`, `skill_id`, `created_by_user_id`, `leader_user_id` và `material_officer_user_id` là external reference khi entity đích thuộc service khác; tính hợp lệ được kiểm tra bằng projection, internal API hoặc event.
+
+---
+
+## 4. Function của Lâm
+
+Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = cần cho baseline nghiệm thu, **P2** = nếu kịp.
+
+### 4.1 Platform (PLT)
+
+| ID | Function | Mô tả / Acceptance criteria | Ưu tiên | Sprint |
+|---|---|---|---|---|
+| F-PLT-01 | Dọn repo & chuẩn hóa template service | Xóa `weatherforecast` khỏi Parish; thêm `.Contracts`, `tests/`; README hướng dẫn tạo service mới | P0 | S0 |
+| F-PLT-02 | docker-compose local | PostgreSQL (1 instance, nhiều DB), RabbitMQ (management UI), Redis, MinIO; `docker compose up` chạy được toàn bộ | P0 | S0 |
+| F-PLT-03 | BuildingBlocks.Web | ProblemDetails + error code chuẩn, response envelope, paging/sort parser (size ≤ 100, field lạ → 400), correlation-id middleware, health check `/health/live` `/health/ready` | P0 | S0 |
+| F-PLT-04 | BuildingBlocks.Security | JWT validation, `ICurrentUser` (userId, role, parishId), policy theo role | P0 | S1 |
+| F-PLT-05 | BuildingBlocks.Messaging | MassTransit + RabbitMQ, event envelope, Outbox (EF Core), Inbox/idempotent consumer, retry 3 lần → DLQ | P0 | S1 |
+| F-PLT-06 | ApiGateway (YARP) | Route theo path API Contract (bảng 2.1a, route cụ thể cho prefix dùng chung), validate JWT, rate limit cho `/auth/login`, `/auth/register`, `/auth/password/*`, `/files/upload-requests`, `/report-exports`, `/system-data-exports`; `/internal/**` không expose | P0 | S1 |
+| F-PLT-07 | Idempotency-Key middleware | Lưu key + response 24h trong Redis; dùng chung cho các service | P1 | S3 |
+| F-PLT-08 | OpenAPI tổng hợp | Gom OpenAPI từng service qua gateway (Scalar/Swagger UI) cho FE/Mobile | P1 | S2 |
+| F-PLT-09 | CI | GitHub Actions: build + test + format check cho mọi PR | P1 | S2 |
+
+### 4.2 ParishCoordination (PAR) — tag `Parish`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-PAR-01 | Quản lý Parish | `listParishes` ✅, `createParish` ✅, `getParish` ✅, `updateParish` ✅ | ADMIN/PARISH; status ACTIVE/INACTIVE | P0 | S0 |
+| F-PAR-02 | Quản lý Community | `listCommunities` ✅, `createCommunity` ✅, `updateCommunity` ✅ | ADMIN/PARISH cho mutation; deactivate thay vì xóa; tên duy nhất trong parish | P0 | S1 |
+| F-PAR-03 | ~~Parish member~~ | **Bỏ** — parish là thuộc tính `app_user.parish_id` (Identity). Danh sách thành viên dùng `listParishUsers` (F-IDN-10) | — | — | — |
+| F-PAR-04 | Work area category | `listWorkAreaCategories` ✅ (USER), `createWorkAreaCategory` ✅, `updateWorkAreaCategory` ✅ (ADMIN) | Code unique; đã được tham chiếu → chỉ deactivate | P1 | S1 |
+| F-PAR-05 | Season CRUD | `listSeasons` ✅, `createSeason` ✅, `getSeason` ✅, `updateSeason` ✅ | ADMIN/PARISH cho mutation; BR-01, BR-02, BR-03; tên và năm đều duy nhất trong parish; tạo và chỉ update ở PLANNING | P0 | S1 |
+| F-PAR-06 | Season lifecycle | `activateSeason` ✅, `completeSeason` ✅, `archiveSeason` ✅ | ADMIN/PARISH; PLANNING → ACTIVE → READY → COMPLETED → ARCHIVED. Activation cần ít nhất một work area, mọi area có leader/officer và không trùng khoảng ACTIVE cùng parish; ARCHIVED read-only. Event mục tiêu: `planning.season.activated/completed/archived`; hiện chưa nối outbox/publisher | P0 | S2 |
+| F-PAR-07 | Work area CRUD | `listWorkAreas` ✅, `createWorkArea` ✅, `getWorkArea` ✅, `updateWorkArea` ✅ | BR-04, BR-05; lịch nằm trong season; category nếu có phải tồn tại và ACTIVE; lưu `latitude`/`longitude` tùy chọn (nullable; latitude từ -90 đến 90, longitude từ -180 đến 180); response gồm planning fields và version | P0 | S1 |
+| F-PAR-08 | Gán community / leader / officer | `assignWorkAreaCommunity` ✅, `assignWorkAreaLeader` ✅, `assignMaterialOfficer` ✅ | BR-06; ADMIN/PARISH; user phải ACTIVE và đúng role/parish; `communityId: null` đưa area về cấp giáo xứ. Event mục tiêu: `planning.work-area.assigned`; hiện chưa nối outbox/publisher | P0 | S2 |
+| F-PAR-09 | Work area status | Nhận event từ Task/Readiness để chuyển PLANNED → IN_PROGRESS → READINESS_REVIEW → NEEDS_CORRECTION/READY → COMPLETED | Consume `task.status.changed`, `readiness.area.ready`, `readiness.area.reopened`; chỉ chuyển `IN_PROGRESS -> READINESS_REVIEW` khi mọi Task không `CANCELLED` đều `COMPLETED` | P1 | S5 |
+| F-PAR-10 | Work area progress | `getWorkAreaProgress` | Trả về `completedTasks/eligibleTasks` và các bộ đếm task theo API v1.3.4; **không tính/không trả % Work Area**. TaskExecution tổng hợp theo `workAreaId`, ParishCoordination ghép status/season, kiểm tra scope. Projection/event riêng không bắt buộc. | P1 | S5 |
+
+### 4.2a F-PAR-10 — Work Area Task-Count Summary (baseline tối giản)
+
+- **Contract:** Giữ nguyên public endpoint `GET /api/v1/work-areas/{workAreaId}/progress` (`getWorkAreaProgress`), roles `PARISH` và `LEADER` với scope check. Trả về `workAreaId`, `seasonId`, `workAreaStatus`, `totalTasks`, `cancelledTasks`, `eligibleTasks`, `completedTasks`, `overdueTasks`, `calculatedAt`. Không có `completionPercent` cho Work Area. FE hiển thị `completedTasks/eligibleTasks` (ví dụ `6/10 task đã hoàn thành`).
+- **Dữ liệu gốc/ownership:** `task` và các trạng thái thuộc TaskExecution DB. TaskExecution thực hiện **một truy vấn `GROUP BY`/`COUNT(*) FILTER` theo `work_area_id`**, có index hỗ trợ `(work_area_id, status)` (và deadline nếu cần). ParishCoordination sở hữu Work Area, xác minh quyền/phạm vi, gọi **một internal aggregate query** đến TaskExecution rồi ghép `workAreaStatus` và `seasonId`. Không truy cập DB khác service trực tiếp.
+- **Quy tắc đếm:** `totalTasks` gồm mọi Task; `cancelledTasks` đếm `CANCELLED`; `eligibleTasks = totalTasks - cancelledTasks`; `completedTasks` đếm `COMPLETED` (Leader nghiệm thu WORK/CORRECTIVE hoặc MO xác nhận giao hàng PURCHASE); `overdueTasks` đếm task chưa `COMPLETED`/`CANCELLED` có deadline trước UTC hiện tại. `SUBMITTED`/TaskProgress 100% không làm tăng `completedTasks` nếu chưa chuyển `COMPLETED`.
+- **Zero/độc lập:** Work Area chưa có task hoặc chỉ có task hủy trả `completedTasks=0`, `eligibleTasks=0`, FE hiện `0/0`, không coi là hoàn thành. `workAreaStatus`/readiness không suy ra từ số đếm. Task % báo cáo của volunteer vẫn lưu trong `task_progress` và không bị thay đổi.
+- **Hiệu năng và vận hành:** Không bắt buộc lập `work_area_progress_projection`, RabbitMQ consumer hoặc bảng cache mới cho F-PAR-10; số liệu được lấy theo request, không chịu độ trễ event projection. Với dashboard nhiều Work Area, TaskExecution cung cấp aggregate **theo danh sách workAreaId trong một request nội bộ/batch** để tránh N+1; đo p95 trước khi quyết định bổ sung projection. Nếu service nguồn không sẵn sàng, trả lỗi phụ thuộc dịch vụ phù hợp, không giả kết quả 0/0.
+- **Acceptance tests:** (1) 6 COMPLETED + 4 trạng thái khác + 1 CANCELLED => `completedTasks=6, eligibleTasks=10, totalTasks=11`; (2) SUBMITTED 100% không tính hoàn thành; (3) 0 task => 0/0; (4) PURCHASE chỉ đếm sau confirm; (5) tính quá hạn theo UTC dù không có event; (6) quyền ngoài scope bị từ chối; (7) batch không N+1; (8) TaskProgress% không bị ảnh hưởng.
+
+### 4.3 TaskExecution (TSK) — tag `Tasks`, `Attendance`, `Support`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-TSK-01 | Projection scope | Hiện có `PUT /internal/season-scopes/{seasonId}` ✅ và `PUT /internal/work-area-scopes/{workAreaId}` ✅; consumer event làm sau | `season_scope`, `work_area_scope` nhận snapshot idempotent theo source version. Mục tiêu là consume `planning.season.*`, `planning.work-area.*` và `identity.user.locked/unlocked`, đồng thời duy trì `user_status_projection`; đồng bộ tự động từ Parish/Identity chưa được nối | P0 | S2 |
+| F-TSK-02 | Task CRUD | `listTasks` ✅, `createTask` ✅, `getTask` ✅, `updateTask` ✅ | LEADER đúng work area; tạo trực tiếp ở `OPEN`; assignment là flow riêng và không bắt buộc khi tạo; season ARCHIVED → chặn; lịch bắt buộc nằm trong work area/season, chưa hỗ trợ override vì contract và DB chưa có lý do override | P0 | S2 |
+| F-TSK-03 | Ready / start / cancel task | `markTaskReady`, `getTaskStartEligibility`, `startTask`, `cancelTask` | `markTaskReady` là command riêng để Leader chốt tuyển và chuyển `OPEN -> NOT_STARTED`. Leader bắt đầu từ `NOT_STARTED` khi mùa `ACTIVE`, đủ Volunteer đã nhận và đủ vật tư đã cấp. Bắt đầu sớm chỉ cảnh báo. `PURCHASE` bỏ kiểm tra vật tư và vẫn có thể bắt đầu qua duyệt check-in. Cancel bắt buộc reason; hủy assignment còn mở nhưng giữ attendance và lịch sử | P0 | S2 |
+| F-TSK-04 | Skill & material & criteria của task | `replaceTaskSkills` ✅, `replaceCompletionCriteria` ✅; `replaceTaskMaterials` chưa làm | Skill replace toàn bộ và unique theo task/skill; completion criteria là text tối đa 4.000 ký tự; materials chờ outbox/event `task.materials.changed` | P0 | S3 |
+| F-TSK-05 | Volunteer matching | `listVolunteerMatches` | Gợi ý theo skill, community, availability, xung đột lịch (BR-15) — đọc profile từ Identity qua HTTP (có cache Redis) | P1 | S4 |
+| F-TSK-06 | Assign trực tiếp | `assignVolunteer`, `listTaskAssignments`, `acceptTaskAssignment`, `declineTaskAssignment` | Direct assignment `PENDING` giữ một slot capacity. Trùng lịch chỉ cảnh báo, Leader vẫn assign mà không cần override. User bị `LOCKED` khi assignment đã `ACCEPTED` thì giữ assignment/lịch sử, chặn thao tác và để Leader phân công lại. Event `task.assignment.created/responded` | P0 | S3 |
+| F-TSK-06a | Chỉ định Nhóm trưởng Task (bổ sung) | `setTaskTeamLeader`, `clearTaskTeamLeader` | LEADER của work area chọn/thay/bỏ một `task_assignment` đang `ACCEPTED`/`IN_PROGRESS` của chính task; nếu task có skill yêu cầu, volunteer **phải khớp ít nhất một skill** và đạt `requiredSkillLevel` tương ứng nếu có (không override); nếu task không có skill, chỉ cần assignment hợp lệ. `task.team_leader_assignment_id` nullable; một volunteer có thể dẫn nhiều task; không thêm role hoặc quyền duyệt. `If-Match` bắt buộc cho cả PUT/DELETE, không nhận `version` trong body. Khi assignment không còn hợp lệ, bỏ chỉ định. Trả về `teamLeaderAssignmentId` trong Task. | P1 | S4 |
+| F-TSK-07 | Đăng ký tự nguyện | `applyForTask`, `listTaskApplications`, `approveTaskApplication`, `rejectTaskApplication` | Application `PENDING` không giữ capacity; chỉ giữ chỗ khi Leader duyệt. Hai người tranh slot cuối → optimistic concurrency (edge case #4) | P0 | S3 |
+| F-TSK-08 | Task của tôi | `listMyTasks` | `TaskFilter` (status, taskType, seasonId) | P0 | S3 |
+| F-TSK-09 | Progress & evidence | `listTaskProgress`, `addTaskProgress` | Chỉ ghi tiến độ thường khi Task `IN_PROGRESS`. Mỗi lần là record mới; file phải là fileId đã `complete` | P0 | S4 |
+| F-TSK-10 | Submit / review | `submitTaskForReview`, `getTaskReviewPackage`, `approveTaskCompletion`, `requestTaskRevision`, `resubmitTask` | BR-16, BR-17; approve set `approved_by/at` + task COMPLETED atomically (ERD check `task_progress_completion_approval`); event `task.progress.submitted` (khi submit/resubmit), `task.completion.reviewed` (Resource, Reporting, Parish consume) | P0 | S4 |
+| F-TSK-11 | Check-in có Leader duyệt (D-06) | `requestCheckIn`, `cancelCheckInRequest`, `listAttendanceRequests`, `approveAttendanceRequest`, `rejectAttendanceRequest`, `recordCheckOut` | BR-18, BR-19, BR-58 → BR-61: chỉ assignment ACCEPTED. Với WORK/CORRECTIVE, gửi và duyệt check-in khi task IN_PROGRESS; tối đa 1 request PENDING hoặc 1 phiên OPEN; Leader duyệt **từng request**, không có endpoint duyệt hàng loạt; reject bắt buộc lý do; `check_in_at = requested_at`; chỉ timestamp server, không bắt buộc GPS/geofence/ảnh; check-out trực tiếp; tính `working_hours`; event `attendance.request.submitted/reviewed` | P0 | S4 |
+| F-TSK-12 | Attendance correction | `requestAttendanceCorrection`, `listAttendanceCorrections`, `approveAttendanceCorrection`, `rejectAttendanceCorrection` | BR-20, BR-21, BR-22 (lưu giờ cũ/mới/lý do/người duyệt); event `attendance.hours.approved` | P1 | S5 |
+| F-TSK-13 | Báo cáo giờ & phiên mở lâu | `listMyAttendance`, `getWorkingHours`, `listLongOpenSessions` + job định kỳ | Event `attendance.session.open-too-long` | P1 | S5 |
+| F-TSK-14 | Support request | `listSupportRequests`, `createSupportRequest`, `getSupportRequest`, `updateSupportRequest`, `publishSupportRequest`, `closeSupportRequest` | TaskExecution sở hữu request và trạng thái; trạng thái chuẩn bị là `PLANNING`. `support_type` = STAFFING / MATERIAL / MIXED. Phần nhân lực có nhiều position, mỗi position có thể yêu cầu nhiều skill theo điều kiện AND; phần vật tư có danh sách material và số lượng. Khi publish phải có ≥ 1 position (STAFFING), ≥ 1 material item (MATERIAL), hoặc cả hai (MIXED) | P1 | S6 |
+| F-TSK-15 | Support response — nhân lực | `respondToSupportRequest`, `listSupportResponses`, `approveSupportMember`, `rejectSupportMember` | Kiểm tra đủ toàn bộ skill, capacity, 1 người ≤ 1 position active/request; thiếu skill bắt buộc thì không được override; approve → tạo assignment | P1 | S6 |
+| F-TSK-15b | Support response — vật tư | `respondToSupportRequest` (phần materials, chỉ MO của work area nguồn), `approveSupportMaterial`, `rejectSupportMaterial` | TaskExecution sở hữu response, quyết định của Leader và trạng thái. Khi Leader duyệt, TaskExecution gọi đồng bộ Resource `POST /internal/support-transfers`; Resource khóa/kiểm tra unallocated stock và ghi `TRANSFER_OUT`, thiếu tồn trả `409 MATERIAL_INSUFFICIENT_AVAILABLE`. Chỉ sau response thành công TaskExecution mới chuyển dòng hỗ trợ sang APPROVED. Một MO bên nhận xác nhận qua `confirmSupportMaterialReceipt` do Resource host; không cần xác nhận hai người. Resource ghi `TRANSFER_IN` cho phần usable và phát kết quả. Trong thời gian chưa nhận kết quả, TaskExecution hiển thị pending sync, retry idempotent và tự đối soát tới khi cập nhật Support Request/Response thành PARTIALLY_FULFILLED hoặc FULFILLED | P1 | S7 |
+| F-TSK-17 | Task mua hàng | `createPurchaseTask` — `POST /purchase-requests/{requestId}/purchase-tasks` (Leader) — tạo task `task_type = PURCHASE` gắn `purchase_request_id`, dùng lại `assignVolunteer` / `acceptTaskAssignment` / `declineTaskAssignment` | Quyết định D-01: thay cho purchase assignment riêng. Chỉ tạo khi PR đã APPROVED (nhận từ event `purchase.request.decided`). Buyer accept → publish `task.purchase-task.assigned`. Khi nhận `purchase.delivery.confirmed` → tự chuyển task COMPLETED | P0 | S4 |
+| F-TSK-16 | Support summary | `getCrossCommunitySupportSummary` | PARISH xem toàn season | P2 | S7 |
+
+### 4.4 NotificationAudit (NTF) — tag `NotificationAudit` + File
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-NTF-01 | File upload | `createUploadRequest`, `completeUpload`, `getDownloadUrl`, `deleteUnattachedFile` + bảng `file_object` | BR-69; presigned URL MinIO ngắn hạn; giới hạn type/size theo API Contract mục 9; gắn file qua `reference_type/reference_id` | P0 | S3 |
+| F-NTF-02 | Notification từ event | Consumer cho danh sách sự kiện BA mục 14 | Mapping event → template; không chứa dữ liệu nhạy cảm | P1 | S5 |
+| F-NTF-03 | API notification | `listNotifications`, `markNotificationRead`, `markAllNotificationsRead`, `get/replaceNotificationPreferences`, `updateNotificationRule` | — | P1 | S5 |
+| F-NTF-04 | Activity log | Consumer ghi log mọi event approve/confirm/reject/lock/export; `listActivityLogs`, `getActivityLog`, `getResourceHistory` | Append-only; không log password/token/URL file | P1 | S6 |
+| F-NTF-05 | Push notification mobile | FCM cho volunteer | — | P2 | S8 |
+| F-NTF-06 | System export / backup | `createSystemDataExport`, `startBackup`, `getBackupStatus` | 202 + job | P2 | S8 |
+
+---
+
+## 5. Function của Vũ
+
+### 5.1 Identity (IDN) — tag `User`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-IDN-01 | Scaffold service + seed role | Service Identity theo template; seed 5 role, tài khoản ADMIN mặc định | — | P0 | S0 |
+| F-IDN-02 | Register / login | `registerUser`, `login` | Hash mật khẩu (ASP.NET Identity `PasswordHasher` hoặc BCrypt); email unique, normalize; tài khoản LOCKED/INACTIVE không login được; event `identity.user.registered` | P0 | S1 |
+| F-IDN-03 | Token | `refreshToken`, `logout` | Access token ngắn hạn (15'), refresh token rotate, phát hiện reuse → revoke cả chuỗi | P0 | S1 |
+| F-IDN-04 | Password reset | `requestPasswordReset`, `resetPassword` | Token 1 lần, hết hạn; revoke refresh token sau reset | P1 | S2 |
+| F-IDN-05 | Profile của tôi | `getMyProfile`, `updateMyProfile` | — | P0 | S1 |
+| F-IDN-06 | Skill catalog | `listSkills`, `createSkill`, `updateSkill` | Đã tham chiếu → deactivate | P0 | S1 |
+| F-IDN-07 | Volunteer profile, skill, lịch rảnh | `replaceMySkills`, `replaceMyAvailability`, community | `volunteer_skill` unique (user, skill); `volunteer_availability` có `available_to > available_from` (BR-70) | P0 | S2 |
+| F-IDN-08 | Admin user | `listUsers`, `createUser`, `updateUser`, `lockUser`, `unlockUser`, `assignUserRole`, `listAssignableRoles` | 1 role/account; `parish_id` bắt buộc trừ ADMIN (BR-67); lock → revoke token + event `identity.user.locked` | P0 | S2 |
+| F-IDN-09 | Internal user lookup | `GET /internal/users?ids=` (chỉ service-to-service) | Trả userId, tên, status, role, communityId, skills; dùng cho Parish/Task/Resource | P0 | S2 |
+| F-IDN-10 | Danh sách user trong parish | `listParishUsers` (`GET /users`) | PARISH/LEADER/MO chỉ thấy user cùng parish; filter community, role, skill | P1 | S2 |
+
+### 5.2 Resource (RES) — tag `Materials`, `Purchases`, `Contributions`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-RES-01 | Projection scope | Consumer `planning.work-area.*`, `planning.season.*`, `task.materials.changed`, `task.completion.reviewed`, `task.purchase-task.assigned` | Bảng `work_area_scope`, `task_projection` | P0 | S2 |
+| F-RES-02 | Material category & catalog | `listMaterialCategories`, `createMaterialCategory`, `updateMaterialCategory`, `listMaterials`, `createMaterial`, `updateMaterial` | Code unique; đơn vị tính lấy từ material | P0 | S2 |
+| F-RES-03 | Material requirement | `listMaterialRequirements`, `createMaterialRequirement`, `updateMaterialRequirement` | Unique (work_area, material); quantity > 0; MO đúng work area | P0 | S3 |
+| F-RES-04 | Inventory ledger + opening stock | `recordOpeningStock`, `listInventory`, `getAllocationHistory` | **Mọi thay đổi stock đều qua `material_transaction`** (append-only). Stock tách theo work area (BR-23, BR-24) | P0 | S3 |
+| F-RES-05 | Shortage | `getWorkAreaShortages`, `listMaterialNeeds` | Công thức BA 8.5; shortage ≥ 0 (BR-25); event `material.shortage.changed` | P0 | S3 |
+| F-RES-06 | Purchase request | `listPurchaseRequests`, `createPurchaseRequest`, `getPurchaseRequest`, `updatePurchaseRequest`, `submitPurchaseRequest`, `getPurchaseRequestHistory` | BR-27; MO tạo ở `PLANNING`, nhiều item; không tạo khi shortage = 0 trừ override + lý do; mọi request submit đều chờ Leader duyệt | P0 | S4 |
+| F-RES-07 | Duyệt purchase request | `approvePurchaseRequest`, `rejectPurchaseRequest` (**role LEADER** của đúng work area — quyết định D-01) | Reject bắt buộc lý do (BR-31); event `purchase.request.submitted/decided` → Task service mở cho Leader tạo task mua | P0 | S4 |
+| F-RES-08 | ~~Giao người mua~~ | **Bỏ** (API v1.1 cũ có endpoint giao người mua riêng) | Gộp vào task mua F-TSK-17 (Lâm). Resource consume `task.purchase-task.assigned` để lưu buyer, PR → `BUYER_ASSIGNED` | — | — |
+| F-RES-09 | Ghi nhận mua | `recordPurchase`, `attachPurchaseReceipt` | Chỉ volunteer đang giữ assignment ACCEPTED của task PURCHASE tương ứng mới được ghi; status PURCHASED, **stock chưa tăng** (BR-26); file hóa đơn từ F-NTF-01; Idempotency-Key | P0 | S5 |
+| F-RES-10 | Xác nhận giao hàng | `confirmPurchaseDelivery`, `requestPurchaseInfo` | MO nhập usable quantity → ghi `material_transaction` + tính lại shortage trong **1 transaction**; giao thiếu → request còn phần dở; event `purchase.delivery.confirmed` | P0 | S5 |
+| F-RES-11 | Vượt dự toán | `approveCostOverrun` (LEADER) | BR-32: `total_cost` > dự toán đã duyệt → chặn `confirmPurchaseDelivery` cho tới khi Leader duyệt; lưu `purchase.cost_overrun_approved_by/at` | P1 | S6 |
+| F-RES-12 | Donor | `listDonors`, `createDonor`, `updateDonor` (MO, ADMIN) | Không auto-merge theo tên/sđt; link `user_id` tùy chọn | P0 | S5 |
+| F-RES-13 | Donation ghi nhận trực tiếp | `listDonations`, `recordDirectDonation` (`POST /donations`), `getDonation`, `listMyContributions` | MO ghi khoản đã nhận ngay: tạo donation status RECEIVED + 1 receipt trong 1 transaction; MONEY: amount > 0; MATERIAL: chỉ usable vào `material_transaction` của **work area đích**; event `contribution.receipt.confirmed` (cho receipt đầu tiên) | P0 | S5 |
+| F-RES-13b | Pledge (D-02) | `listContributionNeeds`, `pledgeMaterialDonation`, `pledgeMonetarySupport` (Volunteer), `cancelDonationPledge` | Donation PLEDGED; donor tự tạo/link theo `user_id`; MATERIAL bắt buộc `work_area_id`; hủy cần lý do; **pledge không bao giờ tăng stock** (BR-39); event `contribution.pledged` | P1 | S6 |
+| F-RES-13c | Ghi nhận lần nhận | `recordDonationReceipt` (`POST /donations/{id}/receipts`) | BR-38: mỗi lần nhận = 1 `donation_receipt` (+ items, unusable nhập ngay trên receipt); cộng dồn received/unusable; PARTIALLY_RECEIVED → RECEIVED; nhận vượt pledge → cảnh báo, ghi theo thực nhận; post stock 1 lần/receipt (unique `reference_type, reference_id`); event `contribution.receipt.confirmed` | P1 | S6 |
+| F-RES-14 | Điều chỉnh donation | `adjustDonation` — `PATCH /donations/{donationId}` | Reconcile delta với stock và contribution (ERD note); event `contribution.donation.adjusted` | P2 | S8 |
+| F-RES-20 | Chuyển kho hỗ trợ vật tư | `POST /internal/support-transfers` (Task gọi đồng bộ) + `confirmSupportMaterialReceipt` — `POST /support-response-materials/{itemId}/confirm-receipt` (MO bên nhận) | Quyết định D-03. Internal: khóa tồn kho nguồn, kiểm tra unallocated, ghi `TRANSFER_OUT` (409 `MATERIAL_INSUFFICIENT_AVAILABLE` nếu thiếu), idempotent theo itemId. Confirm: một MO ghi `TRANSFER_IN` usable cho work area nhận, không cần xác nhận thứ hai; `reference_type = SUPPORT_RESPONSE_MATERIAL`; event `support.transfer.confirmed` phải hỗ trợ retry/đối soát idempotent | P1 | S7 |
+| F-RES-15 | Allocation | `allocateMaterial`, `listMaterialAllocations` | BR-33: tổng allocation ≤ unallocated; 2 MO cùng lấy phần cuối → lock row / serializable; lỗi `MATERIAL_INSUFFICIENT_AVAILABLE` | P0 | S6 |
+| F-RES-16 | Điều chỉnh tồn kho | `createInventoryAdjustment` | Damaged/lost/disposed không quay lại usable (BR-43) | P1 | S6 |
+| F-RES-17 | Task material report | `submitTaskMaterialReport` (Volunteer), `listTaskMaterialReports`, `verifyTaskMaterialReport`, `requestMaterialReportRevision` (MO) | BR-44 → BR-51: chỉ khi task COMPLETED; chỉ từ allocation item của task; remaining+damaged+lost ≤ allocated; chỉ `verified_*` trả remaining về stock cùng work area; không sửa `allocated_quantity`; event `material-report.submitted`, `material-report.verified` | P0 | S7 |
+| F-RES-18 | Loan offer & borrowed item (D-05) | `offerItemForLoan` (Volunteer nhập giùm người cho mượn), `listLoanOffers`, `acceptLoanOffer`, `rejectLoanOffer`, `listBorrowedItems`, `issueBorrowedItem`, `assignBorrowedItem`, `returnBorrowedItem`, `recordBorrowedItemIncident`, `listOverdueBorrowedItems` | BR-41 → BR-43: bắt buộc `owner_name` + `expected_return_date`; `offered_by_user_id` = volunteer nhập, là đầu mối liên hệ; đồ mượn không vào stock; job nhắc trước/sau hạn → event `borrowed-item.return-due` | P1 | S7 |
+| F-RES-19 | ~~Loan offer~~ | Gộp vào F-RES-18 | — | — | — |
+
+### 5.3 Readiness (RDY) — tag `Readiness`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-RDY-01 | ~~Template~~ | Bỏ khỏi baseline (nhóm dùng `readiness_checklist` + `readiness_item` có sẵn) | Chỉ làm nếu sau này bổ sung bảng template (xem Mục 10, mục tùy chọn) | P2 | — |
+| F-RDY-02 | Tạo checklist | `createReadinessCheck`, `replaceReadinessItems`, `getReadinessCheck` | D-04: Leader tự nhập item, `is_required`; chỉ sửa item khi `PLANNING` | P1 | S6 |
+| F-RDY-03 | Ghi kết quả & evidence | `recordReadinessResult`, `attachReadinessEvidence` | Failed → event `readiness.item.failed` | P1 | S7 |
+| F-RDY-04 | Corrective task | `linkCorrectiveTask` | Gọi Task service tạo task (HTTP, có Idempotency-Key) hoặc link task có sẵn; mandatory failed bắt buộc có corrective task | P1 | S7 |
+| F-RDY-05 | Recheck / confirm / reopen | `recheckReadinessItem`, `confirmAreaReadiness`, `reopenReadinessCheck` | BR-52 (còn mandatory chưa pass → 409), BR-53 (reopen cần lý do); event `readiness.area.ready/reopened` | P1 | S7 |
+| F-RDY-06 | Readiness toàn season | `getSeasonReadiness` | — | P1 | S8 |
+
+### 5.4 Reporting (RPT) — tag `Reports`
+
+| ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
+|---|---|---|---|---|---|
+| F-RPT-01 | Contribution type & recognition rule | `list/create/updateContributionType`, `list/createRecognitionRule`, `deactivateRecognitionRule` | Đổi điểm = tạo version mới, có `effective_from/to` (BR-68) | P1 | S6 |
+| F-RPT-02 | Sinh contribution & point | Consumer `task.completion.reviewed`, `attendance.hours.approved`, `purchase.delivery.confirmed`, `contribution.receipt.confirmed`, `contribution.donation.adjusted`, `support.member.completed` | BR-54, BR-55 (không tính 2 lần — unique theo eventId/reference), BR-56; lưu rule version; event `recognition.entry.created` | P1 | S7 |
+| F-RPT-03 | Recognition | `getMyRecognition`, `getSeasonRecognition` | Donor ngoài không có account → không có point | P1 | S7 |
+| F-RPT-04 | Dashboard | `viewSeasonDashboard`, `viewWorkAreaDashboard`, `viewMaterialDashboard` | Read-model build từ event; load < 3s (NFR) | P1 | S8 |
+| F-RPT-05 | Báo cáo | `getTaskReport`, `getMaterialReport`, `getPurchaseReport`, `getContributionReport`, `getAttendanceReport`, `getReadinessReport` | BR-57; ghi rõ parish, season, thời gian tạo, bộ lọc | P1 | S8 |
+| F-RPT-06 | Export | `createReportExport`, `getReportExport` | 202 + job; file xlsx/pdf lưu MinIO | P2 | S9 |
+
+---
+
+## 6. Hợp đồng tích hợp giữa 2 người
+
+### 6.1 Integration event
+
+Đây là hợp đồng tích hợp mục tiêu. Tại mốc 23/10/2026, ParishCoordination và TaskExecution chưa có transactional outbox/publisher/consumer cho các event dưới đây; không được xem danh sách này là bằng chứng rằng integration đã hoàn tất.
+
+| Event | Publisher (owner) | Consumer | Ghi chú |
+|---|---|---|---|
+| `identity.user.registered` | Identity (Vũ) | NotificationAudit | — |
+| `identity.user.locked` / `unlocked` | Identity (Vũ) | Task, Parish, NotificationAudit | Chặn assignment mới và thao tác của user bị khóa; assignment `ACCEPTED` hiện có cùng lịch sử vẫn được giữ để Leader phân công lại (edge case #24) |
+| `planning.season.activated` / `completed` / `archived` | Parish (Lâm) | Task, Resource, Readiness, Reporting | Archived → các service chặn ghi |
+| `planning.work-area.created` / `updated` / `assigned` | Parish (Lâm) | Task, Resource, Readiness, Reporting, NotificationAudit | Payload gồm leader/officer/community/category |
+| `task.materials.changed` | Task (Lâm) | Resource | Danh sách `task_material` |
+| `task.assignment.created` / `responded` | Task (Lâm) | NotificationAudit | Chỉ để thông báo |
+| `task.purchase-task.assigned` | Task (Lâm) | Resource | Buyer accept task PURCHASE → Resource lưu buyer, PR `BUYER_ASSIGNED` |
+| `task.progress.submitted` | Task (Lâm) | NotificationAudit | Volunteer submit task để nghiệm thu |
+| `task.status.changed` | Task (Lâm) | Parish, Reporting | — |
+| `task.completion.reviewed` | Task (Lâm) | Resource, Reporting, Parish, NotificationAudit | Resource mở cho volunteer gửi material report |
+| `attendance.hours.approved` | Task (Lâm) | Reporting | Chỉ giờ đã duyệt (BR-21) |
+| `attendance.session.open-too-long` | Task (Lâm) | NotificationAudit | — |
+| `support.request.published` / `support.member.completed` | Task (Lâm) | NotificationAudit, Reporting | — |
+| `support.material.approved` | Task (Lâm) | NotificationAudit | Chỉ thông báo; trừ kho nguồn đã làm đồng bộ qua `POST /internal/support-transfers` |
+| `support.transfer.confirmed` | Resource (Vũ) | Task | Task cập nhật số lượng đã đáp ứng; nếu event trễ/mất thì giữ pending sync, retry idempotent và chạy đối soát tới khi khớp ledger Resource |
+| `contribution.pledged` / `contribution.receipt.confirmed` | Resource (Vũ) | Reporting, NotificationAudit | Chỉ receipt mới tính contribution/điểm; receipt của donation trực tiếp cũng publish `contribution.receipt.confirmed` |
+| `material.shortage.changed` | Resource (Vũ) | Reporting | — |
+| `purchase.request.submitted` / `decided` | Resource (Vũ) | Task, NotificationAudit | Task chỉ cho tạo task PURCHASE khi APPROVED |
+| `purchase.delivery.confirmed` | Resource (Vũ) | Task, Reporting, NotificationAudit | Task tự đóng task PURCHASE |
+| `contribution.donation.adjusted` | Resource (Vũ) | Reporting | Reporting điều chỉnh contribution 1-1 với donation |
+| `material-report.submitted` / `verified` | Resource (Vũ) | NotificationAudit, Reporting | — |
+| `borrowed-item.return-due` / `overdue` | Resource (Vũ) | NotificationAudit | — |
+| `loan.offer.submitted` | Resource (Vũ) | NotificationAudit | Báo MO có loan offer mới |
+| `attendance.request.submitted` / `reviewed` | Task (Lâm) | NotificationAudit, Reporting | Báo Leader có check-in chờ duyệt; báo volunteer kết quả |
+| `readiness.item.failed` / `area.ready` / `area.reopened` | Readiness (Vũ) | Parish, NotificationAudit, Reporting | Parish chuyển status work area |
+| `recognition.entry.created` | Reporting (Vũ) | NotificationAudit | — |
+
+> Danh mục trên khớp API Contract v1.3.2 Mục 8; **không dùng** `contribution.donation.recorded` và không lọc `task.assignment.responded` để lấy buyer. Khi triển khai, event contract đặt trong `<Service>.Contracts` (record C#, có `Version`), publish qua outbox và consumer idempotent. Khi đổi payload phải tăng version và thông báo người kia trong PR.
+
+### 6.2 HTTP gọi đồng bộ
+
+| Caller | Callee | Endpoint | Lý do |
+|---|---|---|---|
+| Parish, Task, Resource | Identity | `GET /internal/users?ids=` | Kiểm tra user ACTIVE, lấy skill/community khi assign |
+| Readiness | Task | `POST /internal/tasks` (corrective task) | Cần taskId ngay |
+| Task | Resource | `POST /internal/support-transfers` | `approveSupportMaterial` cần biết ngay đủ tồn kho nguồn hay không (R-08) |
+| Task, Resource, Readiness | NotificationAudit | `GET /internal/files/{id}` | Xác thực fileId đã complete và thuộc user |
+
+Mọi HTTP client: typed `HttpClient` + timeout + retry (chỉ GET) + circuit breaker.
+
+### 6.3 Mốc phụ thuộc (blocking)
+
+| Mốc | Ai giao | Ai cần | Hạn |
+|---|---|---|---|
+| docker-compose + BuildingBlocks.Web | Lâm | Vũ | Hết S0 |
+| JWT phát hành (login) + format claim | Vũ | Lâm (gateway, security) | Giữa S1 |
+| BuildingBlocks.Security + Messaging + Gateway | Lâm | Vũ | Hết S1 |
+| Event `planning.work-area.*` | Lâm | Vũ (Resource, Readiness) | Hết S2 |
+| `/internal/users` | Vũ | Lâm (assign leader, assign volunteer) | Hết S2 |
+| File upload (F-NTF-01) | Lâm | Vũ (hóa đơn), Lâm (evidence) | Hết S3 |
+| `task.materials.changed`, `task.completion.reviewed` | Lâm | Vũ (allocation, material report) | Hết S4 |
+| `POST /internal/tasks` | Lâm | Vũ (corrective task) | Hết S6 |
+| Event `purchase.request.decided` + `task.purchase-task.assigned` (buyer = assignee của task PURCHASE) | Vũ ↔ Lâm | Cả hai | Giữa S4 |
+| `POST /internal/support-transfers` | Vũ | Lâm (F-TSK-15b) | Đầu S7 |
+| `confirmSupportMaterialReceipt` + event `support.transfer.confirmed` | Vũ | Lâm | Giữa S7 |
+
+---
+
+### 6.x. Task Team Leader — bổ sung ngày 09/11/2026
+
+- **Owner:** TaskExecution (Lâm); chỉ là phần mở rộng F-TSK-06, không thay thế luồng assignment hiện hữu.
+- **Lưu trữ:** thêm `task.team_leader_assignment_id uuid NULL` và khóa ngoại đến `task_assignment.task_assignment_id` trong cùng DB TaskExecution; validate assignment thuộc đúng task trong Application (khuyến nghị composite FK nếu triển khai). Không tạo bảng mới.
+- **API Contract:** `PUT /api/v1/tasks/{taskId}/team-leader` (`setTaskTeamLeader`) nhận JSON body **chỉ** gồm `teamLeaderAssignmentId` (UUID hợp lệ) và `DELETE /api/v1/tasks/{taskId}/team-leader` (`clearTaskTeamLeader`) **không có body**. Cả hai yêu cầu header `If-Match` (bắt buộc); `version` trong body **không** thay thế header và không thuộc request schema. Cả hai yêu cầu role `LEADER` và work-area scope; trả `200 Task` (kèm `teamLeaderAssignmentId` mới/`null`), version mới và `ETag`. Thiếu hoặc sai định dạng `If-Match` → `400`; version không khớp → `412`.
+- **Validation:** Task chưa `CANCELLED`, season chưa `ARCHIVED`; assignment phải thuộc đúng task, ở `ACCEPTED` hoặc `IN_PROGRESS` và thuộc volunteer còn hoạt động, không bị `LOCKED`. Nếu task có `task_skill`, phải có ít nhất một skill trùng với volunteer và đạt `requiredSkillLevel`/`required_skill_level` của chính skill đó nếu được khai báo. **Không có override** cho điều kiện Nhóm trưởng, kể cả assignment ban đầu từng được override skill mismatch. Task không khai báo skill → bỏ qua kiểm tra skill. Assignment sai task → `409 TASK_TEAM_LEADER_ASSIGNMENT_MISMATCH`; thiếu skill, sai trạng thái hoặc volunteer không hợp lệ → `409 TASK_TEAM_LEADER_NOT_ELIGIBLE`; `If-Match` sai version → `412`. Khi assignment/volunteer không còn hợp lệ hoặc task bị hủy, bỏ tham chiếu; với task đã hoàn thành có thể giữ tham chiếu lịch sử.
+- **Acceptance:** không thay đổi task status, assignment status, capacity, attendance hay quyền review; một volunteer có thể là Nhóm trưởng của nhiều task. Test ít nhất: PUT chọn/thay, DELETE bỏ, sai task, assignment `PENDING`/`CANCELLED`, volunteer `LOCKED`, task có skill khớp, task có skill không khớp, khớp skill nhưng dưới `requiredSkillLevel`, task không có skill, assignment đã override nhưng vẫn thiếu skill, nhiều task, thiếu/sai định dạng `If-Match` → `400`, sai version → `412`, trả version/ETag và tự xóa tham chiếu khi mất hiệu lực.
+
+## 7. Kế hoạch sprint (2 tuần/sprint)
+
+| Sprint | Thời gian | Lâm | Vũ | Demo cuối sprint |
+|---|---|---|---|---|
+| S0 | 07/10 – 18/10/2026 | F-PLT-01..03, F-PAR-01 | F-IDN-01, chốt Mục 9 cùng Lâm | `docker compose up`, tạo parish |
+| S1 | 19/10 – 01/11 | F-PLT-04..06, F-PAR-02, 04, 05, 07 | F-IDN-02, 03, 05, 06 | Login → gọi API qua gateway |
+| S2 | 02/11 – 15/11 | F-PAR-06, 08, F-TSK-01..03, F-PLT-08, 09 | F-IDN-04, 07, 08, 09, 10, F-RES-01, 02 | Tạo season + work area + gán leader/officer, activate |
+| S3 | 16/11 – 29/11 | F-TSK-04, 06, 07, 08, F-NTF-01, F-PLT-07 | F-RES-03, 04, 05 | Tạo task, assign/apply, xem shortage |
+| S4 | 30/11 – 13/12 | F-TSK-05, 09, 10, 11, 17 | F-RES-06, 07 | Check-in → Leader duyệt từng người, progress, nghiệm thu; MO tạo PR → Leader duyệt → tạo task mua |
+| S5 | 14/12 – 27/12 | F-TSK-12, 13, F-PAR-09, 10, F-NTF-02, 03 | F-RES-09, 10, 12, 13 | Volunteer mua → MO xác nhận giao → stock tăng, task mua tự đóng; ghi donation |
+| S6 | 28/12 – 10/01/2027 | F-TSK-14, 15, F-NTF-04 | F-RES-11, 13b, 13c, 15, 16, F-RDY-02, F-RPT-01 | Support nhân lực; pledge → nhận một phần; allocation |
+| S7 | 11/01 – 24/01 | F-TSK-15b, 16, hỗ trợ tích hợp FE/Mobile | F-RES-17, 18, 20, F-RDY-03..05, F-RPT-02, 03 | Support vật tư → chuyển kho; material report → verify; readiness → Ready; điểm |
+| S8 | 25/01 – 07/02 | F-NTF-05, 06, fix bug | F-RDY-06, F-RES-14, F-RPT-04, 05 | Dashboard + báo cáo |
+| — | ~06/02 – 14/02 | Nghỉ Tết (buffer) | Nghỉ Tết (buffer) | — |
+| S9 | 15/02 – 28/02 | Hardening, E2E 16 kịch bản BA mục 17, performance | F-RPT-06, hardening, test | Full flow demo |
+| — | 03/2027 | Tài liệu, deploy, chuẩn bị bảo vệ | Tài liệu, deploy, chuẩn bị bảo vệ | — |
+
+---
+
+## 8. Ma trận kịch bản nghiệm thu (BA mục 17) → owner
+
+| # | Kịch bản | Owner chính | Phối hợp |
+|---|---|---|---|
+| 1 | Tạo, cấu hình, kích hoạt season | Lâm | — |
+| 2 | Leader tạo task có skill + material | Lâm | Vũ (material catalog) |
+| 3 | Assign / đăng ký và duyệt volunteer | Lâm | Vũ (user, skill) |
+| 4 | Check-in, evidence, check-out, nghiệm thu | Lâm | — |
+| 5 | Tính đúng shortage | Vũ | — |
+| 6 | Leader duyệt purchase request, giao task mua cho volunteer | Vũ (duyệt) | Lâm (task mua) |
+| 7 | Buyer gửi thông tin, MO xác nhận giao trước khi tăng stock | Vũ | Lâm (file, đóng task mua) |
+| 8 | Donation MONEY/MATERIAL (trực tiếp hoặc từ pledge), chỉ usable đã nhận tăng stock | Vũ | — |
+| 9 | Allocation không vượt khả dụng | Vũ | — |
+| 10 | Borrowed item đến khi trả | Vũ | — |
+| 11 | Hỗ trợ nhân lực hoặc vật tư liên cộng đoàn | Lâm | Vũ (chuyển kho vật tư) |
+| 12 | Material report sau task, MO verify, remainder về đúng kho | Vũ | Lâm (event task completed) |
+| 13 | Work area không Ready khi còn mandatory failed | Vũ | Lâm (status work area) |
+| 14 | Báo cáo tổng hợp đúng | Vũ | Lâm (event) |
+| 15 | Đúng vai trò và phạm vi | Cả hai (mỗi người cho service của mình) | — |
+| 16 | Audit trail cho approve/sửa/export | Lâm | Vũ (publish event đủ thông tin) |
+
+---
+
+## 9. Quyết định đã chốt (07/10/2026)
+
+| ID | Vấn đề | Quyết định | Function bị ảnh hưởng |
+|---|---|---|---|
+| D-01 | Duyệt mua & giao người mua | Work Area Leader duyệt mọi purchase request; sau đó tạo task `PURCHASE` và giao volunteer qua luồng assignment thường. Không có purchase assignment riêng | F-RES-06, 07, 09, 10, 11 (Vũ), F-TSK-17 (Lâm) |
+| D-02 | Quyên góp | Có pledge qua app; MO ghi từng lần nhận (`donation_receipt`); vẫn có ghi nhận trực tiếp | F-RES-13, 13b, 13c (Vũ) |
+| D-03 | Hỗ trợ liên cộng đoàn | Nhân lực và/hoặc vật tư; vật tư = chuyển kho giữa work area | F-TSK-14, 15, 15b (Lâm), F-RES-20 (Vũ) |
+| D-04 | Readiness | Không có template; Leader tự tạo checklist + item | F-RDY-02 (Vũ) |
+| D-05 | Đồ mượn | Volunteer nhập thông tin người cho mượn giùm (`owner_name/phone/address`), là đầu mối liên hệ | F-RES-18 (Vũ) |
+| D-06 | Check-in | Leader duyệt **từng** yêu cầu check-in của từng người; check-out trực tiếp | F-TSK-11 (Lâm) |
+| R-07 | Tên event (08/10/2026) | Danh mục event thống nhất (Mục 6.1, API Contract v1.3 Mục 8): `task.purchase-task.assigned` cho buyer; `contribution.receipt.confirmed` thay `contribution.donation.recorded` | F-TSK-17, F-RES-01, 08, 13, 13c, F-RPT-02 |
+| R-08 | Duyệt vật tư hỗ trợ (08/10/2026) | Task gọi **đồng bộ** Resource `POST /internal/support-transfers`; thiếu tồn → 409 ngay | F-TSK-15b (Lâm), F-RES-20 (Vũ) |
+| R-06 | Trạng thái season (14/10/2026) | Bỏ DRAFT; season tạo ở PLANNING (đã code) | F-PAR-05, 06 |
+| R-09 | Season trùng (08/10/2026) | Tên **và** năm season đều unique trong parish (đã code) | F-PAR-05 |
+| R-12 | Trạng thái khởi tạo (24/10/2026) | Loại bỏ DRAFT khỏi baseline. Task tạo trực tiếp ở OPEN; Purchase Request, Support Request và Readiness Checklist dùng PLANNING | F-TSK-02, F-RES-06, F-TSK-14, F-RDY-02 |
+| R-13 | Ownership Support (24/10/2026) | TaskExecution sở hữu Support Request/Response và trạng thái; Resource sở hữu stock check, TRANSFER_OUT, xác nhận nhận và TRANSFER_IN | F-TSK-14, 15, 15b; F-RES-20 |
+| R-14 | Chốt tuyển Task (24/10/2026) | `markTaskReady` chuyển `OPEN -> NOT_STARTED` theo lệnh riêng của Leader | F-TSK-03 |
+| R-15 | Cancel Task đã có hoạt động (24/10/2026) | Bắt buộc lý do; hủy assignment còn mở, giữ attendance và lịch sử | F-TSK-03 |
+| R-16 | Work Area vào readiness review (24/10/2026) | Chỉ khi mọi Task không `CANCELLED` đều `COMPLETED` | F-PAR-09 |
+| R-17 | Capacity khi pending (24/10/2026) | Direct assignment `PENDING` giữ chỗ; application `PENDING` không giữ chỗ | F-TSK-06, 07 |
+| R-18 | Trùng lịch (24/10/2026) | Chỉ cảnh báo; Leader assign không cần override | F-TSK-05, 06 |
+| R-19 | User bị khóa (24/10/2026) | Giữ assignment `ACCEPTED` và lịch sử, khóa thao tác, Leader phân công lại | F-TSK-01, 06 |
+| R-20 | Skill trong Support (24/10/2026) | Thiếu skill bắt buộc thì không được override | F-TSK-15 |
+| R-21 | Check-in tối thiểu (24/10/2026) | Chỉ timestamp server; không bắt buộc GPS, geofence hoặc ảnh | F-TSK-11 |
+| R-22 | Đồng bộ chuyển kho Support (24/10/2026) | Resource đã `TRANSFER_IN` nhưng Task chưa nhận kết quả thì pending sync, retry và đối soát | F-TSK-15b, F-RES-20 |
+| R-23 | Xác nhận vật tư giá trị cao (24/10/2026) | Một MO xác nhận, không cần hai người | F-TSK-15b, F-RES-20 |
+| — | Các điểm khác đã áp dụng | 1 role/account; parish là `app_user.parish_id`; gộp ghi nhận + xác nhận giao hàng thành `confirmPurchaseDelivery`; unique cả năm và tên season trong parish | F-IDN-08, 10, F-PAR-03, 05, F-RES-10 |
+
+---
+
+## 10. Tình trạng đồng bộ tài liệu và code
+
+| Tài liệu | Phiên bản mới | Nội dung đã cập nhật |
+|---|---|---|
+| ERD | **v3.6.2** | Logical ERD gồm 56 bảng. Season và các aggregate chuẩn bị không còn DRAFT; Task tạo ở OPEN; schema Task dùng `estimated_minutes`, `required_volunteers`, `start_at` và các field nghiệp vụ khớp API Contract; ownership Support được làm rõ. Không đưa projection, token, outbox hoặc concurrency table kỹ thuật vào logical ERD. |
+| BA | **v1.2.4** | Đồng bộ state machine không DRAFT, Task tạo ở OPEN và assignment tách riêng; sửa ma trận quyền ADMIN theo API Contract; chốt ownership Support giữa TaskExecution và Resource. |
+| API Contract | **v1.3.4** | Giữ endpoint/operationId/role làm nguồn chuẩn; Task create trả OPEN và không bắt buộc assignment; Task schema, Support ownership và trạng thái chuẩn bị đã đồng bộ với BA và logical ERD. |
+| Hiện trạng code | **24/10/2026** | ParishCoordination và TaskExecution đã có các API đánh dấu ✅. TaskExecution đang nhận Season/Work Area scope qua internal snapshot endpoint; projection này là chi tiết persistence của service, không phải bảng trong logical ERD. Transactional outbox/publisher/consumer vẫn chưa hoàn tất. |
+
+Các bản cũ (BA v1/v1.1, ERD v3.4/v3.5, API v1.1/v1.2) vẫn giữ nguyên để đối chiếu.
+
+---
+
+## 11. Checklist hiện trạng
+
+- [x] Chốt D-01 → D-06 (07/10/2026).
+- [x] Cập nhật ERD v3.5, BA v1.1, API Contract v1.2.
+- [x] Có service `Identity`, `ParishCoordination`, `Resource`, `TaskExecution`, docker-compose và YARP baseline.
+- [x] JWT claim và internal user lookup đủ cho Parish gán leader/material officer.
+- [x] Parish CRUD, Community CRUD, Work Area Category, Season CRUD/lifecycle và Work Area CRUD/assignment đã có API.
+- [x] Task list/detail/create/update, completion criteria, skill requirements và local scope projection đã có API.
+- [ ] Nối đồng bộ Parish → Task scope tự động; hiện mới có internal snapshot endpoints ở TaskExecution.
+- [ ] Triển khai outbox/inbox và các integration event trước khi đánh dấu các flow liên service là hoàn tất.
+- [ ] Cả hai: duy trì format JWT claim (`sub`, `role`, `parishId`, `communityId`) và event envelope trong `BuildingBlocks/README.md`.
+- [ ] Tạo GitHub Project board, mỗi Function ID = 1 issue, gắn label `owner:lam` / `owner:vu`, `P0/P1/P2`, `sprint:Sx`.
+
+### Chốt F-PAR-10 ngày 30/10/2026
+
+Work Area progress hiển thị số task hoàn thành / tổng task hợp lệ (`completedTasks/eligibleTasks`), không dùng tỷ lệ phần trăm riêng. Quyết định này chỉ thay đổi định nghĩa response và logic truy vấn summary; không sửa `task_progress.progress_percent`, không bổ sung bảng vào ERD v3.6.2.
+
+> **Phụ lục 09/11/2026:** F-TSK-06a là bổ sung, không thay thế hoặc xóa chức năng v1.3.4. Phần này là yêu cầu thiết kế mới, không được đánh dấu là đã implement.
