@@ -336,7 +336,7 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 7. Leader có thể chọn volunteer để phân công ngay hoặc để trống và thực hiện assignment sau; việc tạo task không phụ thuộc assignment.
 8. Hệ thống hiển thị skill, community, availability và cảnh báo xung đột khi phân công.
 9. Volunteer nhận thông báo và chọn `Accepted` hoặc `Declined`.
-10. Khi kết thúc tuyển người, Leader dùng lệnh **Chốt tuyển / Ready to start** để chuyển task từ `Open` sang `Not Started`.
+10. Khi muốn đưa Task sang trạng thái sẵn sàng, Leader dùng lệnh **Ready to start** để chuyển task từ `Open` sang `Not Started`.
 
 Assignment trực tiếp ở trạng thái `Pending` giữ một chỗ trong `requiredVolunteers`; application tự nguyện ở trạng thái `Pending` chưa giữ chỗ và chỉ chiếm capacity khi Leader duyệt.
 
@@ -347,6 +347,8 @@ Assignment trực tiếp ở trạng thái `Pending` giữ một chỗ trong `re
 3. Assignment ở trạng thái `Pending`.
 4. Leader duyệt hoặc từ chối.
 5. Khi duyệt, capacity còn lại giảm tương ứng.
+
+WORK và CORRECTIVE cho phép mời thêm, tự đăng ký, duyệt và từ chối đăng ký ở `OPEN`, `NOT_STARTED` và `IN_PROGRESS`, theo quy tắc capacity và kỹ năng hiện có.
 
 **Ngoại lệ:**
 
@@ -368,9 +370,9 @@ Assignment trực tiếp ở trạng thái `Pending` giữ một chỗ trong `re
 
 ### 8.2b. Bắt đầu công việc
 
-Sau khi chốt tuyển, Work Area Leader dùng **Bắt đầu** để chuyển Task từ `NOT_STARTED` sang `IN_PROGRESS`. Mùa phải `ACTIVE`, số Volunteer khác nhau có assignment `ACCEPTED` hoặc `IN_PROGRESS` phải đủ theo yêu cầu (mặc định tối thiểu một người khi thiếu dữ liệu), và mọi vật tư bắt buộc đã được cấp đủ. Nếu chưa xác minh được cấp phát thì Task chưa thể bắt đầu. Bắt đầu sớm hơn lịch dự kiến chỉ trả cảnh báo. Hệ thống lưu người và thời điểm bắt đầu rồi phát sự kiện đổi trạng thái.
+Work Area Leader dùng **Bắt đầu** để chuyển Task WORK/CORRECTIVE từ `NOT_STARTED` sang `IN_PROGRESS` khi mùa `ACTIVE`. Thiếu Volunteer đã nhận (kể cả 0), thiếu vật tư đã cấp, chưa xác minh được vật tư và bắt đầu sớm hơn lịch chỉ trả cảnh báo. Hệ thống lưu người và thời điểm bắt đầu rồi phát sự kiện đổi trạng thái một lần. Bấm lại khi Task đã chạy trả Task và ETag hiện tại, giữ nguyên version và không phát thêm sự kiện.
 
-Task `PURCHASE` bỏ qua kiểm tra vật tư và vẫn có thể bắt đầu từ lần duyệt check-in đầu tiên. Xác nhận giao hàng tiếp tục hoàn tất Task mua.
+Task `PURCHASE` bắt đầu từ lần duyệt check-in đầu tiên. Xác nhận giao hàng tiếp tục hoàn tất Task mua.
 
 ### 8.3. Check-in, check-out và sửa giờ
 
@@ -681,7 +683,7 @@ OPEN/NOT_STARTED/IN_PROGRESS -> CANCELLED
 
 Task được tạo trực tiếp ở `Open` khi Leader gửi form. Task chưa cần có assignment tại thời điểm tạo.
 
-Chuyển `Open -> Not Started` chỉ xảy ra khi Leader dùng command **Chốt tuyển / Ready to start**.
+Chuyển `Open -> Not Started` chỉ xảy ra khi Leader dùng command **Ready to start**.
 
 Khi cancel task, Leader bắt buộc nhập lý do; các assignment còn mở chuyển `Cancelled`, còn attendance và lịch sử đã phát sinh được giữ nguyên.
 
@@ -874,7 +876,7 @@ Chỉ report đã được Material Officer xác minh mới làm thay đổi off
 
 ### 10.9. Làm rõ nghiệp vụ ngày 24/10/2026
 
-- **BR-71:** Task `OPEN` chỉ chuyển sang `NOT_STARTED` khi Leader dùng command **Chốt tuyển / Ready to start**.
+- **BR-71:** Task `OPEN` chỉ chuyển sang `NOT_STARTED` khi Leader dùng command **Ready to start**.
 - **BR-72:** Cancel task luôn cần lý do; nếu đã có assignment hoặc attendance thì hủy các assignment còn mở nhưng giữ nguyên attendance và lịch sử.
 - **BR-73:** Work area chỉ chuyển `IN_PROGRESS -> READINESS_REVIEW` khi mọi task không ở trạng thái `CANCELLED` đều đã `COMPLETED`.
 - **BR-74:** Direct assignment `PENDING` giữ chỗ trong `requiredVolunteers`; task application `PENDING` không giữ chỗ cho đến khi được duyệt.
@@ -1124,7 +1126,7 @@ Hệ thống đạt baseline nghiệp vụ khi chứng minh được các kịch
 | R-09 (08/10/2026) | Season trùng lặp | Tên và năm season đều duy nhất trong giáo xứ |
 | R-12 (24/10/2026) | Trạng thái khởi tạo | Loại bỏ `Draft` khỏi baseline. Task tạo trực tiếp ở `Open`; Purchase Request, Support Request và Readiness Checklist dùng `Planning` cho giai đoạn chuẩn bị. |
 | R-13 (24/10/2026) | Ownership Support | TaskExecution sở hữu Support Request/Response và trạng thái; Resource sở hữu kiểm tra tồn kho, `TRANSFER_OUT`, xác nhận nhận và `TRANSFER_IN`. |
-| R-14 (24/10/2026) | Chốt tuyển Task | Leader dùng command **Ready to start** để chuyển `OPEN -> NOT_STARTED`. |
+| R-14 (24/10/2026) | Chuyển Task sang sẵn sàng | Leader dùng command **Ready to start** để chuyển `OPEN -> NOT_STARTED`. |
 | R-15 (24/10/2026) | Cancel Task đã có hoạt động | Cho phép cancel với lý do; hủy assignment còn mở và giữ attendance/lịch sử. |
 | R-16 (24/10/2026) | Work Area vào readiness review | Chỉ chuyển khi mọi Task không `CANCELLED` đều `COMPLETED`. |
 | R-17 (24/10/2026) | Capacity khi pending | Direct assignment `PENDING` giữ chỗ; application `PENDING` không giữ chỗ. |

@@ -215,7 +215,7 @@ Table task {
   required_volunteers int [not null]
   start_at timestamp
   deadline timestamp [not null]
-  status varchar(30) [not null, note: 'OPEN, NOT_STARTED, IN_PROGRESS, SUBMITTED, REVISION_REQUIRED, COMPLETED, CANCELLED. Created in OPEN.']
+  status varchar(30) [not null, note: 'OPEN, NOT_STARTED, IN_PROGRESS, SUBMITTED, REVISION_REQUIRED, COMPLETED, CANCELLED. Created in OPEN. Recruitment for WORK and CORRECTIVE is allowed in OPEN, NOT_STARTED and IN_PROGRESS.']
   started_at timestamptz [note: 'UTC time of explicit start; null for legacy tasks and PURCHASE started by check-in.']
   started_by_user_id uuid [note: 'Identity user ID of the assigned Work Area Leader who explicitly started the task. Nullable.']
 
