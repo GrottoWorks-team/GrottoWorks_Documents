@@ -184,6 +184,8 @@ Table work_area {
   work_area_description text
   latitude decimal(10,7) [note: 'Optional latitude coordinate in decimal degrees (-90 to 90).']
   longitude decimal(10,7) [note: 'Optional longitude coordinate in decimal degrees (-180 to 180).']
+  map_x decimal(8,7) [note: 'Optional normalized horizontal pin position on the current parish map image (0 to 1, left to right).']
+  map_y decimal(8,7) [note: 'Optional normalized vertical pin position on the current parish map image (0 to 1, top to bottom).']
   start_date date
   deadline date
   work_area_status varchar(30) [not null, note: 'PLANNED, IN_PROGRESS, READINESS_REVIEW, NEEDS_CORRECTION, READY, COMPLETED']
@@ -194,6 +196,7 @@ Table work_area {
   checks {
     `latitude IS NULL OR latitude BETWEEN -90 AND 90` [name: 'work_area_latitude_range']
     `longitude IS NULL OR longitude BETWEEN -180 AND 180` [name: 'work_area_longitude_range']
+    `(map_x IS NULL AND map_y IS NULL) OR (map_x IS NOT NULL AND map_y IS NOT NULL AND map_x BETWEEN 0 AND 1 AND map_y BETWEEN 0 AND 1)` [name: 'work_area_map_pin_valid']
   }
 
   Note: 'The community, when assigned, must belong to the same parish as the owning season. The category, when assigned or changed, must be ACTIVE. IN_PROGRESS moves to READINESS_REVIEW only when every task other than CANCELLED is COMPLETED. An ARCHIVED season makes its work areas read-only.'
