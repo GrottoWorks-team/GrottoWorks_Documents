@@ -426,6 +426,8 @@ Báo cáo tiến độ thường của WORK/CORRECTIVE chỉ được gửi khi 
 
 ### 8.5. Lập kế hoạch vật tư và tính thiếu hụt
 
+Leader khai báo nhu cầu vật tư trên từng Task. Resource cộng số lượng từ các Task trong cùng khu vực theo từng vật tư. Danh sách nhu cầu cấp khu vực dùng để xem và tính thiếu hụt, còn số lượng thực tế lấy từ sổ kho.
+
 Mỗi material requirement cần tối thiểu:
 
 - Material.

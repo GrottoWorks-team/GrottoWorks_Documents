@@ -43,6 +43,8 @@ Table parish {
   parish_address varchar(255)
   parish_description text
   parish_status varchar(30) [not null]
+  map_image_file_id uuid [note: 'Optional logical reference to a completed MAP_IMAGE in NotificationAudit.']
+  map_image_file_name varchar(255)
 
   created_at timestamp [not null]
   updated_at timestamp
@@ -399,6 +401,7 @@ Table material {
 }
 
 Table material_requirement {
+  Note: 'Historical manually entered requirements. Current area requirements are read-only totals derived from Task materials.'
   material_requirement_id uuid [pk]
 
   work_area_id uuid [not null]
@@ -1004,10 +1007,10 @@ Table file_object {
   content_type varchar(100) [not null]
   size_bytes bigint [not null]
   checksum varchar(128)
-  purpose varchar(50) [not null, note: 'PROGRESS_EVIDENCE, PURCHASE_RECEIPT, READINESS_EVIDENCE, DONATION_EVIDENCE, OTHER']
+  purpose varchar(50) [not null, note: 'PROGRESS_EVIDENCE, PURCHASE_RECEIPT, READINESS_EVIDENCE, DONATION_EVIDENCE, MAP_IMAGE, DESIGN_ASSET, OTHER']
   file_status varchar(30) [not null, note: 'PENDING_UPLOAD, UPLOADED, ATTACHED, DELETED']
 
-  reference_type varchar(50) [note: 'TASK_PROGRESS, PURCHASE_RECEIPT, READINESS_ITEM, DONATION_RECEIPT']
+  reference_type varchar(50) [note: 'TASK_PROGRESS, PURCHASE_RECEIPT, READINESS_ITEM, DONATION_RECEIPT, PARISH']
   reference_id uuid
 
   created_at timestamp [not null]

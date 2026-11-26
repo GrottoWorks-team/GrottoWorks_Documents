@@ -163,7 +163,7 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 
 | ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
 |---|---|---|---|---|---|
-| F-PAR-01 | Quản lý Parish | `listParishes` ✅, `createParish` ✅, `getParish` ✅, `updateParish` ✅ | ADMIN/PARISH; status ACTIVE/INACTIVE | P0 | S0 |
+| F-PAR-01 | Quản lý Parish | `listParishes`, `createParish`, `getParish`, `updateParish`, `getParishMap`, `saveParishMap` | ADMIN/PARISH theo quyền từng API. Bản đồ dùng file MAP_IMAGE của người upload; khi chờ chốt, trả 503 FILE_ATTACHMENT_PENDING và có thể gửi lại cùng fileId | P0 | S0 |
 | F-PAR-02 | Quản lý Community | `listCommunities` ✅, `createCommunity` ✅, `updateCommunity` ✅ | ADMIN/PARISH cho mutation; deactivate thay vì xóa; tên duy nhất trong parish | P0 | S1 |
 | F-PAR-03 | ~~Parish member~~ | **Bỏ** — parish là thuộc tính `app_user.parish_id` (Identity). Danh sách thành viên dùng `listParishUsers` (F-IDN-10) | — | — | — |
 | F-PAR-04 | Work area category | `listWorkAreaCategories` ✅ (USER), `createWorkAreaCategory` ✅, `updateWorkAreaCategory` ✅ (ADMIN) | Code unique; đã được tham chiếu → chỉ deactivate | P1 | S1 |
@@ -211,7 +211,7 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 
 | ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
 |---|---|---|---|---|---|
-| F-NTF-01 | File upload | `createUploadRequest`, `completeUpload`, `getDownloadUrl`, `deleteUnattachedFile` + bảng `file_object` | BR-69; presigned URL MinIO ngắn hạn; giới hạn type/size theo API Contract mục 9; gắn file qua `reference_type/reference_id` | P0 | S3 |
+| F-NTF-01 | File upload | `createUploadRequest`, `completeUpload`, `proxyUploadFile`, `getDownloadUrl`, `deleteUnattachedFile` + bảng `file_object` | BR-69; URL ký sẵn ngắn hạn hoặc upload qua Gateway; MAP_IMAGE tối đa 20 MiB, DESIGN_ASSET tối đa 100 MiB (ảnh hoặc GLB); xem mục 9 API Contract | P0 | S3 |
 | F-NTF-02 | Notification từ event | Consumer cho danh sách sự kiện BA mục 14 | Mapping event → template; không chứa dữ liệu nhạy cảm | P1 | S5 |
 | F-NTF-03 | API notification | `listNotifications`, `markNotificationRead`, `markAllNotificationsRead`, `get/replaceNotificationPreferences`, `updateNotificationRule` | — | P1 | S5 |
 | F-NTF-04 | Activity log | Consumer ghi log mọi event approve/confirm/reject/lock/export; `listActivityLogs`, `getActivityLog`, `getResourceHistory` | Append-only; không log password/token/URL file | P1 | S6 |
@@ -243,7 +243,7 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 |---|---|---|---|---|---|
 | F-RES-01 | Projection scope | Consumer `planning.work-area.*`, `planning.season.*`, `task.materials.changed`, `task.completion.reviewed`, `task.purchase-task.assigned` | Bảng `work_area_scope`, `task_projection` | P0 | S2 |
 | F-RES-02 | Material category & catalog | `listMaterialCategories`, `createMaterialCategory`, `updateMaterialCategory`, `listMaterials`, `createMaterial`, `updateMaterial` | Code unique; đơn vị tính lấy từ material | P0 | S2 |
-| F-RES-03 | Material requirement | `listMaterialRequirements`, `createMaterialRequirement`, `updateMaterialRequirement` | Unique (work_area, material); quantity > 0; MO đúng work area | P0 | S3 |
+| F-RES-03 | Material requirement | `listMaterialRequirements` | Resource tổng hợp chỉ đọc từ nhu cầu vật tư Task theo khu vực và mã vật tư. POST/PATCH ghi tay cũ trả 422 MANUAL_MATERIAL_REQUIREMENT_DISABLED | P0 | S3 |
 | F-RES-04 | Inventory ledger + opening stock | `recordOpeningStock`, `listInventory`, `getAllocationHistory` | **Mọi thay đổi stock đều qua `material_transaction`** (append-only). Stock tách theo work area (BR-23, BR-24) | P0 | S3 |
 | F-RES-05 | Shortage | `getWorkAreaShortages`, `listMaterialNeeds` | Công thức BA 8.5; shortage ≥ 0 (BR-25); event `material.shortage.changed` | P0 | S3 |
 | F-RES-06 | Purchase request | `listPurchaseRequests`, `createPurchaseRequest`, `getPurchaseRequest`, `updatePurchaseRequest`, `submitPurchaseRequest`, `getPurchaseRequestHistory` | BR-27; MO tạo ở `PLANNING`, nhiều item; không tạo khi shortage = 0 trừ override + lý do; mọi request submit đều chờ Leader duyệt | P0 | S4 |
