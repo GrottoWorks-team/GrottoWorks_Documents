@@ -163,13 +163,13 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 
 | ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
 |---|---|---|---|---|---|
-| F-PAR-01 | Quản lý Parish | `listParishes` ✅, `createParish` ✅, `getParish` ✅, `updateParish` ✅ | ADMIN/PARISH; status ACTIVE/INACTIVE | P0 | S0 |
+| F-PAR-01 | Quản lý Parish | `listParishes`, `createParish`, `getParish`, `updateParish`, `getParishMap`, `saveParishMap` | ADMIN/PARISH theo quyền từng API. Bản đồ dùng file MAP_IMAGE của người upload; khi chờ chốt, trả 503 FILE_ATTACHMENT_PENDING và có thể gửi lại cùng fileId | P0 | S0 |
 | F-PAR-02 | Quản lý Community | `listCommunities` ✅, `createCommunity` ✅, `updateCommunity` ✅ | ADMIN/PARISH cho mutation; deactivate thay vì xóa; tên duy nhất trong parish | P0 | S1 |
 | F-PAR-03 | ~~Parish member~~ | **Bỏ** — parish là thuộc tính `app_user.parish_id` (Identity). Danh sách thành viên dùng `listParishUsers` (F-IDN-10) | — | — | — |
 | F-PAR-04 | Work area category | `listWorkAreaCategories` ✅ (USER), `createWorkAreaCategory` ✅, `updateWorkAreaCategory` ✅ (ADMIN) | Code unique; đã được tham chiếu → chỉ deactivate | P1 | S1 |
 | F-PAR-05 | Season CRUD | `listSeasons` ✅, `createSeason` ✅, `getSeason` ✅, `updateSeason` ✅ | ADMIN/PARISH cho mutation; BR-01, BR-02, BR-03; tên và năm đều duy nhất trong parish; tạo và chỉ update ở PLANNING | P0 | S1 |
 | F-PAR-06 | Season lifecycle | `activateSeason` ✅, `completeSeason` ✅, `archiveSeason` ✅ | ADMIN/PARISH; PLANNING → ACTIVE → READY → COMPLETED → ARCHIVED. Activation cần ít nhất một work area, mọi area có leader/officer và không trùng khoảng ACTIVE cùng parish; ARCHIVED read-only. Event mục tiêu: `planning.season.activated/completed/archived`; hiện chưa nối outbox/publisher | P0 | S2 |
-| F-PAR-07 | Work area CRUD | `listWorkAreas` ✅, `createWorkArea` ✅, `getWorkArea` ✅, `updateWorkArea` ✅ | BR-04, BR-05; lịch nằm trong season; category nếu có phải tồn tại và ACTIVE; lưu `latitude`/`longitude` tùy chọn (nullable; latitude từ -90 đến 90, longitude từ -180 đến 180); response gồm planning fields và version | P0 | S1 |
+| F-PAR-07 | Work area CRUD | `listWorkAreas` ✅, `createWorkArea` ✅, `getWorkArea` ✅, `updateWorkArea` ✅ | BR-04, BR-05. Lịch nằm trong season và category phải ACTIVE nếu được chọn. `latitude`/`longitude` tùy chọn, lần lượt từ -90 đến 90 và -180 đến 180. `mapX`/`mapY` là cặp tọa độ ghim trên ảnh, mỗi giá trị trong [0, 1]. PATCH bỏ qua cả cặp thì giữ ghim, gửi cả hai là null thì bỏ ghim. Response gồm tọa độ, planning fields và version. | P0 | S1 |
 | F-PAR-08 | Gán community / leader / officer | `assignWorkAreaCommunity` ✅, `assignWorkAreaLeader` ✅, `assignMaterialOfficer` ✅ | BR-06; ADMIN/PARISH; user phải ACTIVE và đúng role/parish; `communityId: null` đưa area về cấp giáo xứ. Event mục tiêu: `planning.work-area.assigned`; hiện chưa nối outbox/publisher | P0 | S2 |
 | F-PAR-09 | Work area status | Nhận event từ Task/Readiness để chuyển PLANNED → IN_PROGRESS → READINESS_REVIEW → NEEDS_CORRECTION/READY → COMPLETED | Consume `task.status.changed`, `readiness.area.ready`, `readiness.area.reopened`; chỉ chuyển `IN_PROGRESS -> READINESS_REVIEW` khi mọi Task không `CANCELLED` đều `COMPLETED` | P1 | S5 |
 | F-PAR-10 | Work area progress | `getWorkAreaProgress` | Trả về `completedTasks/eligibleTasks` và các bộ đếm task theo API v1.3.4; **không tính/không trả % Work Area**. TaskExecution tổng hợp theo `workAreaId`, ParishCoordination ghép status/season, kiểm tra scope. Projection/event riêng không bắt buộc. | P1 | S5 |
@@ -211,7 +211,7 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 
 | ID | Function | Endpoint (operationId) | Business rule / AC | Ưu tiên | Sprint |
 |---|---|---|---|---|---|
-| F-NTF-01 | File upload | `createUploadRequest`, `completeUpload`, `getDownloadUrl`, `deleteUnattachedFile` + bảng `file_object` | BR-69; presigned URL MinIO ngắn hạn; giới hạn type/size theo API Contract mục 9; gắn file qua `reference_type/reference_id` | P0 | S3 |
+| F-NTF-01 | File upload | `createUploadRequest`, `completeUpload`, `proxyUploadFile`, `getDownloadUrl`, `deleteUnattachedFile` + bảng `file_object` | BR-69; URL ký sẵn ngắn hạn hoặc upload qua Gateway; MAP_IMAGE tối đa 20 MiB, DESIGN_ASSET tối đa 100 MiB (ảnh hoặc GLB); xem mục 9 API Contract | P0 | S3 |
 | F-NTF-02 | Notification từ event | Consumer cho danh sách sự kiện BA mục 14 | Mapping event → template; không chứa dữ liệu nhạy cảm | P1 | S5 |
 | F-NTF-03 | API notification | `listNotifications`, `markNotificationRead`, `markAllNotificationsRead`, `get/replaceNotificationPreferences`, `updateNotificationRule` | — | P1 | S5 |
 | F-NTF-04 | Activity log | Consumer ghi log mọi event approve/confirm/reject/lock/export; `listActivityLogs`, `getActivityLog`, `getResourceHistory` | Append-only; không log password/token/URL file | P1 | S6 |
@@ -243,7 +243,7 @@ Ký hiệu ưu tiên: **P0** = bắt buộc cho demo luồng chính, **P1** = c�
 |---|---|---|---|---|---|
 | F-RES-01 | Projection scope | Consumer `planning.work-area.*`, `planning.season.*`, `task.materials.changed`, `task.completion.reviewed`, `task.purchase-task.assigned` | Bảng `work_area_scope`, `task_projection` | P0 | S2 |
 | F-RES-02 | Material category & catalog | `listMaterialCategories`, `createMaterialCategory`, `updateMaterialCategory`, `listMaterials`, `createMaterial`, `updateMaterial` | Code unique; đơn vị tính lấy từ material | P0 | S2 |
-| F-RES-03 | Material requirement | `listMaterialRequirements`, `createMaterialRequirement`, `updateMaterialRequirement` | Unique (work_area, material); quantity > 0; MO đúng work area | P0 | S3 |
+| F-RES-03 | Material requirement | `listMaterialRequirements` | Resource tổng hợp chỉ đọc từ nhu cầu vật tư Task theo khu vực và mã vật tư. POST/PATCH ghi tay cũ trả 422 MANUAL_MATERIAL_REQUIREMENT_DISABLED | P0 | S3 |
 | F-RES-04 | Inventory ledger + opening stock | `recordOpeningStock`, `listInventory`, `getAllocationHistory` | **Mọi thay đổi stock đều qua `material_transaction`** (append-only). Stock tách theo work area (BR-23, BR-24) | P0 | S3 |
 | F-RES-05 | Shortage | `getWorkAreaShortages`, `listMaterialNeeds` | Công thức BA 8.5; shortage ≥ 0 (BR-25); event `material.shortage.changed` | P0 | S3 |
 | F-RES-06 | Purchase request | `listPurchaseRequests`, `createPurchaseRequest`, `getPurchaseRequest`, `updatePurchaseRequest`, `submitPurchaseRequest`, `getPurchaseRequestHistory` | BR-27; MO tạo ở `PLANNING`, nhiều item; không tạo khi shortage = 0 trừ override + lý do; mọi request submit đều chờ Leader duyệt | P0 | S4 |

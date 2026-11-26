@@ -213,7 +213,7 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 | Parish | Giáo xứ sử dụng hệ thống | Có nhiều community, user và season |
 | Community | Cộng đoàn thuộc giáo xứ | Có tình nguyện viên và có thể phụ trách nhiều work area |
 | ChristmasSeason | Mùa chuẩn bị theo năm | Chứa toàn bộ dữ liệu vận hành của một mùa |
-| WorkArea | Khu vực hoặc công trình | Thuộc season, có leader, officer, nhiều task và tọa độ địa lý tùy chọn (`latitude`, `longitude`; có thể để trống) |
+| WorkArea | Khu vực hoặc công trình | Thuộc season, có leader, officer, nhiều task, tọa độ địa lý tùy chọn (`latitude`, `longitude`) và ghim tùy chọn trên ảnh bản đồ (`mapX`, `mapY`) |
 | Task | Đơn vị công việc có thể giao và nghiệm thu | Thuộc work area; loại `WORK`, `PURCHASE` (mua theo purchase request) hoặc `CORRECTIVE` (khắc phục readiness) |
 | Skill | Kỹ năng chuẩn hóa | Quan hệ nhiều-nhiều với task và volunteer |
 | VolunteerProfile | Hồ sơ tham gia của người dùng | Có community, skill, availability và contribution |
@@ -257,6 +257,8 @@ Mùa Giáng sinh là aggregate hoặc business backbone chính. Mọi dữ liệ
 6. Mỗi task được gắn kỹ năng, số người, thời lượng, vật tư và tiêu chí hoàn thành.
 7. Cán bộ vật tư lập nhu cầu và xác định thiếu hụt.
 8. Mùa được kích hoạt khi tối thiểu có khu vực và các vai trò bắt buộc.
+
+Mỗi Work Area có thể có một ghim trên ảnh bản đồ hiện hành của giáo xứ. `mapX` tính từ trái sang phải và `mapY` tính từ trên xuống dưới. Hai giá trị cùng nằm trong khoảng từ 0 đến 1 hoặc cùng để trống khi khu vực chưa được ghim. Khi thay ảnh, hệ thống giữ tọa độ đã lưu để người quản lý kiểm tra và đặt lại nếu bố cục thay đổi.
 
 ### 7.2. Giai đoạn huy động nguồn lực
 
@@ -425,6 +427,8 @@ Báo cáo tiến độ thường của WORK/CORRECTIVE chỉ được gửi khi 
 `Volunteer Submitted` không đồng nghĩa với `Task Completed`.
 
 ### 8.5. Lập kế hoạch vật tư và tính thiếu hụt
+
+Leader khai báo nhu cầu vật tư trên từng Task. Resource cộng số lượng từ các Task trong cùng khu vực theo từng vật tư. Danh sách nhu cầu cấp khu vực dùng để xem và tính thiếu hụt, còn số lượng thực tế lấy từ sổ kho.
 
 Mỗi material requirement cần tối thiểu:
 
